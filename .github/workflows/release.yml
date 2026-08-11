@@ -1,0 +1,32 @@
+name: Create Paperlane Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build Windows package
+        shell: bash
+        run: |
+          mkdir -p dist/Paperlane
+          cp app.js cloud-sync.js hosting-config.js icon.svg icon-192.png icon-512.png index.html \
+            manifest.webmanifest paperlane_server.py README.md PUBLISHING.md \
+            Start-Paperlane.bat Stop-Paperlane.bat storage.js styles.css \
+            supabase-config.js supabase-schema.sql sw.js version.json dist/Paperlane/
+          cd dist
+          zip -r "Paperlane-${GITHUB_REF_NAME}-Windows.zip" Paperlane
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" "dist/Paperlane-${GITHUB_REF_NAME}-Windows.zip" --generate-notes

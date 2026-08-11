@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#102a43" />
+    <meta name="description" content="每日论文速览" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:8765 https://*.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="apple-touch-icon" href="icon-192.png" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <title>Paperlane · 每日学术</title>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <div class="brand-mark" aria-hidden="true">P</div>
+          <div>
+            <p class="eyebrow">DAILY RESEARCH BRIEF</p>
+            <h1>Paperlane</h1>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <span class="connection-state" id="connectionState"><span class="status-dot"></span>已连接</span>
+          <button class="icon-button" id="refreshButton" title="刷新论文" aria-label="刷新论文">
+            <span aria-hidden="true">↻</span>
+          </button>
+          <button class="avatar-button" id="profileButton" title="账号与同步" aria-label="账号与同步">L</button>
+        </div>
+      </header>
+
+      <div class="mobile-toolbar">
+        <button class="filter-button active" data-filter="all">全部 <span id="allCount">0</span></button>
+        <button class="filter-button" data-filter="unread">未读 <span id="unreadCount">0</span></button>
+        <button class="filter-button" data-filter="important">重要 <span id="importantCount">0</span></button>
+      </div>
+
+      <div class="workspace">
+        <aside class="sidebar">
+          <div class="sidebar-section source-section">
+            <div class="section-label-row">
+              <span>来源</span>
+              <button class="tiny-button" id="manageSourcesButton">管理</button>
+            </div>
+            <nav class="source-nav" id="sourceNav" aria-label="论文来源"></nav>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="section-label-row">
+              <span>我的分组</span>
+              <button class="tiny-button" id="newGroupButton">+ 新建</button>
+            </div>
+            <nav class="group-nav" id="groupNav" aria-label="自定义分组"></nav>
+          </div>
+
+          <div class="sidebar-footer">
+            <button class="sync-card" id="syncCard" type="button">
+              <div class="sync-icon" aria-hidden="true">↗</div>
+              <div>
+                <strong id="sidebarSyncTitle">本地模式</strong>
+                <p id="sidebarSyncDetail">标记保存在此设备</p>
+              </div>
+            </button>
+            <button class="secondary-button" id="installButton" hidden>
+              <span aria-hidden="true">↓</span> 安装到设备
+            </button>
+          </div>
+        </aside>
+
+        <main class="main-content">
+          <section class="feed-header">
+            <div class="feed-heading">
+              <div>
+                <div class="breadcrumb" id="todayBreadcrumb">今天</div>
+                <h2 id="feedTitle">全部论文</h2>
+              </div>
+              <div class="feed-metrics">
+                <span id="lastUpdated">刚刚更新</span>
+                <span class="metric-divider"></span>
+                <span><strong id="visibleCount">0</strong> 篇</span>
+              </div>
+            </div>
+
+            <div class="feed-controls">
+              <div class="search-field">
+                <span aria-hidden="true">⌕</span>
+                <input id="searchInput" type="search" placeholder="搜索标题、作者或关键词" autocomplete="off" />
+                <kbd>/</kbd>
+              </div>
+              <label class="time-range-control" title="arXiv、Nature 和 Science 的时间范围">
+                <span>其他来源</span>
+                <select id="timeRangeSelect" aria-label="arXiv、Nature 和 Science 的时间范围">
+                  <option value="1">最近 1 天</option>
+                  <option value="3">最近 3 天</option>
+                  <option value="7">最近 7 天</option>
+                  <option value="30" selected>最近 30 天</option>
+                  <option value="90">最近 90 天</option>
+                  <option value="180">最近 180 天</option>
+                  <option value="365">最近 1 年</option>
+                </select>
+              </label>
+              <label class="time-range-control ieee-scope-control" title="IEEE Early Access 和正式期范围">
+                <span>IEEE</span>
+                <select id="ieeeScopeSelect" aria-label="IEEE Early Access 和正式期范围">
+                  <option value="ea+1" selected>EA + 最新 1 期</option>
+                  <option value="ea">仅 Early Access</option>
+                  <option value="1">仅最新 1 期</option>
+                  <option value="ea+2">EA + 最近 2 期</option>
+                  <option value="2">仅最近 2 期</option>
+                  <option value="ea+3">EA + 最近 3 期</option>
+                  <option value="3">仅最近 3 期</option>
+                  <option value="ea+5">EA + 最近 5 期</option>
+                  <option value="5">仅最近 5 期</option>
+                </select>
+              </label>
+              <div class="desktop-filters" role="tablist" aria-label="论文状态">
+                <button class="filter-button active" data-filter="all" role="tab">全部 <span id="desktopAllCount">0</span></button>
+                <button class="filter-button" data-filter="unread" role="tab">未读 <span id="desktopUnreadCount">0</span></button>
+                <button class="filter-button" data-filter="important" role="tab">重要 <span id="desktopImportantCount">0</span></button>
+              </div>
+            </div>
+          </section>
+
+          <section class="source-strip" id="sourceStrip" aria-label="当前数据源">
+            <div class="source-strip-main">
+              <span class="live-indicator"></span>
+              <span id="sourceStripText">arXiv · cs.AI / cs.LG / cs.CV</span>
+            </div>
+            <span class="source-strip-meta" id="sourceStripMeta">演示快照 · 18:00</span>
+          </section>
+
+          <section class="paper-list" id="paperList" aria-live="polite"></section>
+          <button class="load-more-button" id="loadMoreButton" type="button" hidden>显示更多</button>
+
+          <div class="empty-state" id="emptyState" hidden>
+            <div class="empty-mark" aria-hidden="true">⌁</div>
+            <h3>没有匹配的论文</h3>
+            <p>换个关键词，或切换上方筛选条件。</p>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <dialog class="modal sources-modal" id="sourcesModal">
+      <form method="dialog" class="modal-card" id="sourcesForm">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">JOURNAL SOURCES</p>
+            <h2>管理期刊</h2>
+          </div>
+          <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+        </div>
+        <div class="source-picker-toolbar">
+          <div class="search-field source-picker-search">
+            <span aria-hidden="true">⌕</span>
+            <input id="sourcePickerSearch" type="search" placeholder="搜索期刊名或缩写" autocomplete="off" />
+          </div>
+          <button class="tiny-button" type="button" id="selectAllSourcesButton">全选</button>
+          <button class="tiny-button" type="button" id="clearSourcesButton">清空</button>
+        </div>
+        <p class="selection-summary" id="sourceSelectionSummary">已选择 0 本</p>
+        <div class="source-picker" id="sourcePicker"></div>
+        <div class="modal-actions">
+          <button class="secondary-button" value="cancel">取消</button>
+          <button class="primary-button" value="default">保存并刷新</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="groupModal">
+      <form method="dialog" class="modal-card" id="groupForm">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">NEW COLLECTION</p>
+            <h2>新建分组</h2>
+          </div>
+          <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+        </div>
+        <label class="form-label" for="groupName">分组名称</label>
+        <input class="form-input" id="groupName" name="groupName" placeholder="例如：本周精读" maxlength="24" required />
+        <div class="color-options" aria-label="选择颜色">
+          <button type="button" class="color-option selected" data-color="#0f766e" style="--color:#0f766e" aria-label="青绿色"></button>
+          <button type="button" class="color-option" data-color="#c2410c" style="--color:#c2410c" aria-label="橙红色"></button>
+          <button type="button" class="color-option" data-color="#7c3aed" style="--color:#7c3aed" aria-label="紫色"></button>
+          <button type="button" class="color-option" data-color="#2563eb" style="--color:#2563eb" aria-label="蓝色"></button>
+          <button type="button" class="color-option" data-color="#a16207" style="--color:#a16207" aria-label="金色"></button>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary-button" value="cancel">取消</button>
+          <button class="primary-button" value="default">创建分组</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="paperGroupModal">
+      <form method="dialog" class="modal-card" id="paperGroupForm">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">SAVE PAPER</p>
+            <h2>添加到分组</h2>
+          </div>
+          <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+        </div>
+        <p class="modal-paper-title" id="modalPaperTitle"></p>
+        <div class="group-picker" id="groupPicker"></div>
+        <div class="modal-actions">
+          <button class="secondary-button" value="cancel">取消</button>
+          <button class="primary-button" value="default">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal account-modal" id="accountModal">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">ACCOUNT &amp; SYNC</p>
+            <h2>账号与设备</h2>
+          </div>
+          <button class="modal-close" type="button" data-close-account aria-label="关闭">×</button>
+        </div>
+
+        <section class="account-status">
+          <span class="account-status-icon" id="accountStatusIcon">L</span>
+          <div>
+            <strong id="accountMode">本地模式</strong>
+            <p id="accountDetail">数据仅保存在当前设备</p>
+          </div>
+        </section>
+
+        <div id="accountSignedOut">
+          <form id="accountForm" class="account-form">
+            <label class="form-label" for="accountEmail">邮箱</label>
+            <input class="form-input" id="accountEmail" type="email" autocomplete="email" required />
+            <label class="form-label account-password-label" for="accountPassword">密码</label>
+            <input class="form-input" id="accountPassword" type="password" autocomplete="current-password" minlength="8" required />
+            <p class="account-note" id="cloudConfigNote">登录后自动同步已读、重要、分组和期刊设置。</p>
+            <div class="account-actions">
+              <button class="secondary-button" id="signUpButton" type="button">注册</button>
+              <button class="primary-button" type="submit">登录并同步</button>
+            </div>
+          </form>
+        </div>
+
+        <div id="accountSignedIn" hidden>
+          <dl class="account-facts">
+            <div><dt>账号</dt><dd id="accountUserEmail">-</dd></div>
+            <div><dt>同步</dt><dd id="syncStatusText">等待同步</dd></div>
+          </dl>
+          <div class="account-actions">
+            <button class="secondary-button" id="signOutButton" type="button">退出登录</button>
+            <button class="primary-button" id="syncNowButton" type="button">立即同步</button>
+          </div>
+        </div>
+
+        <div class="account-divider"></div>
+        <section class="device-section">
+          <div class="device-heading"><strong>当前设备 <span class="app-version" id="appVersion">v0.5.0</span></strong><span id="storageUsage">正在计算占用</span></div>
+          <div class="device-actions">
+            <button class="secondary-button" id="accountInstallButton" type="button">安装 Paperlane</button>
+            <button class="secondary-button" id="exportButton" type="button">导出数据</button>
+            <button class="danger-button" id="clearDeviceButton" type="button">清除本机记录</button>
+          </div>
+        </section>
+      </div>
+    </dialog>
+
+    <aside class="update-banner" id="updateBanner" aria-live="polite" hidden>
+      <div><strong>新版本可用</strong><span>重新载入即可完成升级</span></div>
+      <button class="primary-button" id="applyUpdateButton" type="button">立即更新</button>
+      <button class="update-dismiss" id="dismissUpdateButton" type="button" aria-label="稍后更新">×</button>
+    </aside>
+
+    <script src="hosting-config.js"></script>
+    <script src="supabase-config.js"></script>
+    <script src="storage.js"></script>
+    <script src="cloud-sync.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

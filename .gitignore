@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+paper-cache.json
+paper-history.json
+paperlane-*-test.png
+_site/
+.DS_Store
+Thumbs.db
