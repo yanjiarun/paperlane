@@ -35,13 +35,15 @@ Paperlane 在没有 Supabase 的情况下可以一直使用。要启用多设备
 1. 创建一个 Supabase 免费项目。
 2. 打开 Supabase 的 SQL Editor，完整运行 **supabase-schema.sql**。
 3. 在 Authentication > Providers > Email 中启用邮箱和密码登录。
-4. 在 Project Settings > API 找到 Project URL 和 anon public key。
-5. 用文本编辑器打开 **supabase-config.js**，将 url 和 anonKey 后面的空字符串分别改成这两个值。
+4. 在 Project Settings > API Keys（或项目的 Connect 对话框）找到 Project URL 和 **Publishable key**（`sb_publishable_...`）。旧项目也可以继续使用 legacy anon key。
+5. 仅本机模式需要编辑 **supabase-config.js**：将 url 和 anonKey 后面的空字符串分别改成这两个值。
 6. 重新启动 Paperlane，点击右上角 L 注册或登录。
 
-anon key 本来就是公开前端密钥，安全边界由数据库 RLS 策略保证。不要把 service_role key 写入 Paperlane，也不要发给其他人。
+publishable/anon key 本来就是公开前端密钥，安全边界由数据库 RLS 策略保证。不要把 secret/service_role key 写入 Paperlane，也不要发给其他人。构建脚本检测到高权限密钥时会终止构建，防止意外发布。
 
-发布到 GitHub Pages 时不需要把配置写进代码。可以在 GitHub Actions Repository variables 中设置 SUPABASE_URL 和 SUPABASE_ANON_KEY，构建时会自动生成配置。
+发布到 GitHub Pages 时不要把配置写进代码。在 GitHub Actions Repository variables 中设置 **SUPABASE_URL** 和 **SUPABASE_PUBLISHABLE_KEY**，然后手动重新运行一次 Pages workflow；构建会自动生成配置。旧的 **SUPABASE_ANON_KEY** 变量仍兼容。
+
+若网页账号窗口显示“线上未注入 Supabase 配置”，可直接打开线上 `supabase-config.js` 检查：url 和 anonKey 为空就表示变量尚未进入最近一次 Pages 构建。仅在 GitHub 设置中新增变量不会自动部署，必须重新运行工作流。
 
 ## 同步规则
 
@@ -56,7 +58,7 @@ anon key 本来就是公开前端密钥，安全边界由数据库 RLS 策略保
 
 云端只保存已读、重要、分组、期刊设置，以及重要/分组论文的少量题录快照。不会上传论文全文、本机文件、普通浏览轨迹或邮箱密码。密码由 Supabase Auth 处理，Paperlane 不保存密码。
 
-数据库脚本为五张用户表强制启用 RLS，并分别限制查询、新增、修改和删除只能操作 user_id = auth.uid() 的数据。前端仅使用 anon key。Supabase 不是端到端加密服务，因此不要在分组名等字段中存放敏感信息。
+数据库脚本为五张用户表强制启用 RLS，并分别限制查询、新增、修改和删除只能操作 user_id = auth.uid() 的数据。前端仅使用 publishable/anon key。Supabase 不是端到端加密服务，因此不要在分组名等字段中存放敏感信息。
 
 ## 论文数据
 

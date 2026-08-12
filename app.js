@@ -307,7 +307,7 @@ const state = {
   renderLimit: PAGE_SIZE,
   dataMode: usesStaticData() ? "static" : "local",
   dataUpdatedAt: "",
-  appVersion: "0.5.0",
+  appVersion: "0.5.1",
 };
 
 const store = new window.PaperlaneStore();
@@ -369,6 +369,12 @@ const els = {
   updateBanner: document.querySelector("#updateBanner"),
   applyUpdateButton: document.querySelector("#applyUpdateButton"),
   dismissUpdateButton: document.querySelector("#dismissUpdateButton"),
+  installModal: document.querySelector("#installModal"),
+  installGuideTitle: document.querySelector("#installGuideTitle"),
+  installGuideIntro: document.querySelector("#installGuideIntro"),
+  installGuideSteps: document.querySelector("#installGuideSteps"),
+  installGuideNote: document.querySelector("#installGuideNote"),
+  retryInstallButton: document.querySelector("#retryInstallButton"),
 };
 
 let selectedColor = "#0f766e";
@@ -378,6 +384,11 @@ let deferredInstallPrompt;
 let sourcePickerSelection = new Set();
 let pendingServiceWorker = null;
 let serviceWorkerRegistration = null;
+let serviceWorkerSetupPromise = null;
+let lastSyncError = "";
+let abstractResizeTimer = 0;
+const expandedAbstracts = new Set();
+const collapsibleAbstracts = new Set();
 
 function validSettings(settings) {
   if (!settings) return null;
@@ -601,6 +612,7 @@ function renderPapers() {
   const papers = currentPapers();
   const rendered = papers.slice(0, state.renderLimit);
   els.paperList.innerHTML = rendered.map(renderPaper).join("");
+  window.requestAnimationFrame(updateAbstractToggles);
   els.paperList.hidden = papers.length === 0;
   els.emptyState.hidden = papers.length !== 0;
   els.visibleCount.textContent = papers.length;
@@ -619,6 +631,7 @@ function renderPaper(paper) {
   const paperTiming = paper.issueLabel
     ? `${paper.issueLabel}${paper.issueType === "early-access" ? ` · ${paper.date.slice(0, 4)}` : ""}`
     : `${relativeDate(paper.date)} · ${formatDate(paper.date)}`;
+  const abstractExpanded = expandedAbstracts.has(paper.id);
   return `
     <article class="paper-card ${isRead ? "read" : ""} ${isImportant ? "important" : ""}" data-paper-id="${escapeHtml(paper.id)}">
       <div class="paper-topline">
@@ -635,7 +648,10 @@ function renderPaper(paper) {
       </div>
       <h3 class="paper-title">${escapeHtml(paper.title)}</h3>
       <p class="paper-authors">${escapeHtml(paper.authors)}</p>
-      <p class="paper-abstract">${escapeHtml(paper.abstract)}</p>
+      <div class="paper-abstract-wrap">
+        <p class="paper-abstract ${abstractExpanded ? "expanded" : ""}">${escapeHtml(paper.abstract)}</p>
+        <button class="abstract-toggle" type="button" data-action="abstract" aria-expanded="${abstractExpanded}" ${abstractExpanded || collapsibleAbstracts.has(paper.id) ? "" : "hidden"}>${abstractExpanded ? "收起摘要" : "展开摘要"}</button>
+      </div>
       <div class="paper-footer">
         <div class="paper-tags">${(Array.isArray(paper.tags) ? paper.tags : []).map((tag) => `<span class="paper-tag">${escapeHtml(tag)}</span>`).join("")}</div>
         <div class="paper-actions">
@@ -646,6 +662,23 @@ function renderPaper(paper) {
       </div>
     </article>
   `;
+}
+
+function updateAbstractToggles() {
+  els.paperList.querySelectorAll("[data-paper-id]").forEach((card) => {
+    const paperId = card.dataset.paperId;
+    const abstract = card.querySelector(".paper-abstract");
+    const button = card.querySelector(".abstract-toggle");
+    if (!abstract || !button) return;
+    if (expandedAbstracts.has(paperId)) {
+      button.hidden = false;
+      return;
+    }
+    const truncated = abstract.scrollHeight > abstract.clientHeight + 1;
+    if (truncated) collapsibleAbstracts.add(paperId);
+    else collapsibleAbstracts.delete(paperId);
+    button.hidden = !truncated;
+  });
 }
 
 function updateFeedTitle() {
@@ -688,6 +721,16 @@ async function handlePaperAction(event) {
   const paper = state.papers.find((item) => item.id === paperId);
   if (!paper) return;
   const action = actionButton.dataset.action;
+  if (action === "abstract") {
+    const expanded = !expandedAbstracts.has(paperId);
+    if (expanded) expandedAbstracts.add(paperId);
+    else expandedAbstracts.delete(paperId);
+    const abstract = card.querySelector(".paper-abstract");
+    abstract?.classList.toggle("expanded", expanded);
+    actionButton.setAttribute("aria-expanded", String(expanded));
+    actionButton.textContent = expanded ? "收起摘要" : "展开摘要";
+    return;
+  }
   if (action === "read") {
     state.read[paperId] = !state.read[paperId];
     await store.savePaperState(activeNamespace, paperId, state.read[paperId], state.important[paperId]);
@@ -947,6 +990,30 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function isAppInstalled() {
+  const installedModes = ["standalone", "fullscreen", "minimal-ui", "window-controls-overlay"];
+  return installedModes.some((mode) => window.matchMedia(`(display-mode: ${mode})`).matches) || Boolean(window.navigator.standalone);
+}
+
+function updateInstallUi() {
+  const installed = isAppInstalled();
+  els.appVersion.textContent = `v${state.appVersion}`;
+  els.accountInstallButton.textContent = installed
+    ? "已安装到设备"
+    : deferredInstallPrompt ? "安装 Paperlane" : "查看安装方法";
+  els.accountInstallButton.disabled = installed;
+  const sidebarButton = document.querySelector("#installButton");
+  if (sidebarButton) sidebarButton.hidden = installed || !deferredInstallPrompt;
+}
+
+function cloudConfigurationMessage() {
+  if (cloud.configured) return "登录后自动同步已读、重要、分组和期刊设置。";
+  if (state.dataMode === "static" && /尚未填写|尚未/i.test(cloud.configurationIssue)) {
+    return "线上未注入 Supabase 配置：请设置 GitHub Actions Variables 中的 SUPABASE_URL 和 SUPABASE_PUBLISHABLE_KEY，然后重新运行 Pages workflow。";
+  }
+  return `云同步不可用：${cloud.configurationIssue}。本地功能不受影响。`;
+}
+
 async function updateAccountUi() {
   const loggedIn = Boolean(cloud.user);
   const pending = await store.getOutbox(activeNamespace);
@@ -964,16 +1031,16 @@ async function updateAccountUi() {
 
   if (loggedIn) {
     els.accountUserEmail.textContent = cloud.user.email || cloud.user.id;
-    els.syncStatusText.textContent = pending.length
+    els.syncStatusText.textContent = lastSyncError
+      ? `同步失败：${lastSyncError}`
+      : pending.length
       ? `${pending.length} 项等待同步`
       : lastSync ? `上次 ${new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(lastSync))}` : "尚未同步";
   } else {
     const inputs = els.accountForm.querySelectorAll("input, button");
     inputs.forEach((element) => { element.disabled = !cloud.configured; });
     const note = document.querySelector("#cloudConfigNote");
-    note.textContent = cloud.configured
-      ? "登录后自动同步已读、重要、分组和期刊设置。"
-      : "云同步尚未配置；本地功能不受影响。";
+    note.textContent = cloudConfigurationMessage();
     note.classList.toggle("warning", !cloud.configured);
   }
 
@@ -987,10 +1054,7 @@ async function updateAccountUi() {
   } else {
     els.storageUsage.textContent = "本地存储可用";
   }
-  const installed = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
-  els.appVersion.textContent = `v${state.appVersion}`;
-  els.accountInstallButton.textContent = installed ? "已安装到设备" : "安装 Paperlane";
-  els.accountInstallButton.disabled = Boolean(installed);
+  updateInstallUi();
 }
 
 async function loadVersionInfo() {
@@ -1011,30 +1075,34 @@ function offerAppUpdate(worker) {
 }
 
 async function setupServiceWorker() {
-  if (!("serviceWorker" in navigator) || window.location.protocol === "file:") return;
-  serviceWorkerRegistration = await navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" });
-  if (serviceWorkerRegistration.waiting && navigator.serviceWorker.controller) {
-    offerAppUpdate(serviceWorkerRegistration.waiting);
-  }
-  serviceWorkerRegistration.addEventListener("updatefound", () => {
-    const worker = serviceWorkerRegistration.installing;
-    if (!worker) return;
-    worker.addEventListener("statechange", () => {
-      if (worker.state === "installed" && navigator.serviceWorker.controller) offerAppUpdate(worker);
-    });
-  });
-  let reloading = false;
-  let controllerSeen = Boolean(navigator.serviceWorker.controller);
-  navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (!controllerSeen) {
-      controllerSeen = true;
-      return;
+  if (serviceWorkerSetupPromise) return serviceWorkerSetupPromise;
+  serviceWorkerSetupPromise = (async () => {
+    if (!("serviceWorker" in navigator) || window.location.protocol === "file:") return;
+    serviceWorkerRegistration = await navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" });
+    if (serviceWorkerRegistration.waiting && navigator.serviceWorker.controller) {
+      offerAppUpdate(serviceWorkerRegistration.waiting);
     }
-    if (reloading) return;
-    reloading = true;
-    window.location.reload();
-  });
-  window.setInterval(() => serviceWorkerRegistration.update().catch(() => {}), 60 * 60 * 1000);
+    serviceWorkerRegistration.addEventListener("updatefound", () => {
+      const worker = serviceWorkerRegistration.installing;
+      if (!worker) return;
+      worker.addEventListener("statechange", () => {
+        if (worker.state === "installed" && navigator.serviceWorker.controller) offerAppUpdate(worker);
+      });
+    });
+    let reloading = false;
+    let controllerSeen = Boolean(navigator.serviceWorker.controller);
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!controllerSeen) {
+        controllerSeen = true;
+        return;
+      }
+      if (reloading) return;
+      reloading = true;
+      window.location.reload();
+    });
+    window.setInterval(() => serviceWorkerRegistration.update().catch(() => {}), 60 * 60 * 1000);
+  })();
+  return serviceWorkerSetupPromise;
 }
 
 async function openAccountModal() {
@@ -1050,13 +1118,15 @@ async function syncAccount(quiet = false) {
   els.syncStatusText.textContent = "正在同步";
   try {
     await cloud.sync(activeNamespace);
+    lastSyncError = "";
     await loadWorkspace(activeNamespace, false);
     render();
     await updateAccountUi();
     if (!quiet) showToast("同步完成");
     return true;
   } catch (error) {
-    els.syncStatusText.textContent = "等待下次联网";
+    lastSyncError = error.message;
+    els.syncStatusText.textContent = `同步失败：${error.message}`;
     if (!quiet) showToast(`同步暂不可用：${error.message}`);
     return false;
   }
@@ -1148,20 +1218,76 @@ async function clearDeviceData() {
   showToast("当前设备记录已清除");
 }
 
+async function promptNativeInstall() {
+  if (!deferredInstallPrompt) return false;
+  const promptEvent = deferredInstallPrompt;
+  deferredInstallPrompt = null;
+  try {
+    await promptEvent.prompt();
+    const choice = await promptEvent.userChoice;
+    if (choice?.outcome === "accepted") showToast("正在安装 Paperlane");
+  } catch {
+    showToast("浏览器未能打开安装窗口，请查看安装方法");
+    updateInstallUi();
+    return false;
+  }
+  updateInstallUi();
+  return true;
+}
+
+function showInstallGuide() {
+  const userAgent = navigator.userAgent;
+  const ios = /iPad|iPhone|iPod/.test(userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const iosAlternateBrowser = /CriOS|FxiOS|EdgiOS|OPiOS/.test(userAgent);
+  const android = /Android/i.test(userAgent);
+  const inAppBrowser = /MicroMessenger|QQ\/|Weibo|FBAN|FBAV|Instagram/i.test(userAgent);
+  let title = "安装到当前设备";
+  let intro = "当前浏览器没有提供可由网页直接调用的安装窗口。";
+  let steps = ["打开浏览器主菜单。", "选择“安装应用”“添加到主屏幕”或“创建快捷方式”。"];
+  let note = "不同浏览器的菜单名称可能略有不同。安装后，Paperlane 会以独立窗口启动。";
+
+  if (isAppInstalled()) {
+    title = "Paperlane 已安装";
+    intro = "当前页面已经在独立应用模式中运行，无需再次安装。";
+    steps = [];
+    note = "可以从设备主屏幕或应用列表再次打开 Paperlane。";
+  } else if (ios) {
+    title = "添加到 iPhone / iPad 主屏幕";
+    intro = iosAlternateBrowser ? "iOS 上请改用 Safari 完成安装。" : "Safari 通过“添加到主屏幕”安装网页应用。";
+    steps = iosAlternateBrowser
+      ? ["复制当前网址并使用 Safari 打开。", "点击 Safari 工具栏中的分享按钮。", "向下滑动并选择“添加到主屏幕”，然后确认。"]
+      : ["点击 Safari 工具栏中的分享按钮。", "向下滑动并选择“添加到主屏幕”。", "点击右上角“添加”确认。"];
+    note = "iPhone 和 iPad 不会触发网页内的原生安装弹窗，这是系统浏览器的限制。";
+  } else if (inAppBrowser) {
+    title = "请先用系统浏览器打开";
+    intro = "微信、QQ 等应用内浏览器通常不开放 PWA 安装功能。";
+    steps = ["点击右上角菜单并选择“在浏览器打开”。", "优先选择 Chrome、Edge 或系统浏览器。", "回到 Paperlane 后再次点击安装。"];
+    note = "切换到支持 PWA 的浏览器后，安装按钮会在浏览器准备就绪时直接打开安装窗口。";
+  } else if (android) {
+    title = "安装到 Android";
+    intro = "浏览器尚未提供原生安装窗口，可以先从浏览器菜单安装。";
+    steps = ["确认当前页面使用 HTTPS 打开。", "打开浏览器右上角主菜单。", "选择“安装应用”或“添加到主屏幕”。"];
+    note = "Chrome 可能需要先在页面停留片刻并进行一次点击，之后 Paperlane 的安装按钮会自动切换为可直接安装。";
+  }
+
+  els.installGuideTitle.textContent = title;
+  els.installGuideIntro.textContent = intro;
+  els.installGuideSteps.innerHTML = steps.map((step) => `<li>${step}</li>`).join("");
+  els.installGuideSteps.hidden = steps.length === 0;
+  els.installGuideNote.textContent = note;
+  els.retryInstallButton.hidden = isAppInstalled();
+  if (!els.installModal.open) els.installModal.showModal();
+}
+
 async function installApp() {
-  if (deferredInstallPrompt) {
-    deferredInstallPrompt.prompt();
-    await deferredInstallPrompt.userChoice;
-    deferredInstallPrompt = null;
-    document.querySelector("#installButton").hidden = true;
-    await updateAccountUi();
+  if (isAppInstalled()) {
+    updateInstallUi();
+    showToast("Paperlane 已安装到当前设备");
     return;
   }
-  if (/iPad|iPhone|iPod/.test(navigator.userAgent)) {
-    window.alert("请点击 Safari 的分享按钮，然后选择“添加到主屏幕”。");
-  } else {
-    showToast("请使用浏览器菜单中的“安装应用”或“创建快捷方式”");
-  }
+  if (await promptNativeInstall()) return;
+  await setupServiceWorker().catch(() => {});
+  showInstallGuide();
 }
 
 document.addEventListener("click", async (event) => {
@@ -1236,6 +1362,19 @@ els.sourcesForm.addEventListener("submit", async (event) => {
 document.querySelector("#newGroupButton").addEventListener("click", () => { els.groupModal.showModal(); setTimeout(() => els.groupName.focus(), 50); });
 document.querySelector("#installButton").addEventListener("click", installApp);
 els.accountInstallButton.addEventListener("click", installApp);
+document.querySelector("#closeInstallModalButton").addEventListener("click", () => els.installModal.close());
+document.querySelector("#dismissInstallGuideButton").addEventListener("click", () => els.installModal.close());
+els.retryInstallButton.addEventListener("click", async () => {
+  els.retryInstallButton.disabled = true;
+  if (await promptNativeInstall()) {
+    els.retryInstallButton.disabled = false;
+    els.installModal.close();
+    return;
+  }
+  await setupServiceWorker().catch(() => {});
+  els.retryInstallButton.disabled = false;
+  showInstallGuide();
+});
 els.groupForm.addEventListener("submit", async (event) => { event.preventDefault(); await createGroup(); });
 els.paperGroupForm.addEventListener("submit", async (event) => { event.preventDefault(); await savePaperGroups(); });
 els.loadMoreButton.addEventListener("click", () => {
@@ -1275,8 +1414,21 @@ window.addEventListener("offline", updateConnectionState);
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
   deferredInstallPrompt = event;
-  document.querySelector("#installButton").hidden = false;
+  updateInstallUi();
 });
+window.addEventListener("appinstalled", () => {
+  deferredInstallPrompt = null;
+  if (els.installModal.open) els.installModal.close();
+  updateInstallUi();
+  showToast("Paperlane 已安装完成");
+});
+window.addEventListener("resize", () => {
+  window.clearTimeout(abstractResizeTimer);
+  abstractResizeTimer = window.setTimeout(updateAbstractToggles, 120);
+});
+
+// Register early: installability checks should not wait for paper data or cloud startup.
+const serviceWorkerStartup = setupServiceWorker().catch(() => null);
 
 async function initializeApp() {
   const storageReady = await store.open();
@@ -1295,7 +1447,7 @@ async function initializeApp() {
   await updateAccountUi();
   if (!storageReady) showToast("浏览器未开放本地数据库，本次记录仅临时保存");
   if (restoredUser && navigator.onLine) await syncAccount(true);
-  await setupServiceWorker().catch(() => {});
+  await serviceWorkerStartup;
   if (window.location.protocol !== "file:") refreshPapers(false, true);
 }
 

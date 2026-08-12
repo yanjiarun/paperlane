@@ -262,13 +262,37 @@
 
         <div class="account-divider"></div>
         <section class="device-section">
-          <div class="device-heading"><strong>当前设备 <span class="app-version" id="appVersion">v0.5.0</span></strong><span id="storageUsage">正在计算占用</span></div>
+          <div class="device-heading"><strong>当前设备 <span class="app-version" id="appVersion">v0.5.1</span></strong><span id="storageUsage">正在计算占用</span></div>
           <div class="device-actions">
             <button class="secondary-button" id="accountInstallButton" type="button">安装 Paperlane</button>
             <button class="secondary-button" id="exportButton" type="button">导出数据</button>
             <button class="danger-button" id="clearDeviceButton" type="button">清除本机记录</button>
           </div>
         </section>
+      </div>
+    </dialog>
+
+    <dialog class="modal install-modal" id="installModal">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">INSTALL PAPERLANE</p>
+            <h2 id="installGuideTitle">安装到当前设备</h2>
+          </div>
+          <button class="modal-close" id="closeInstallModalButton" type="button" aria-label="关闭">×</button>
+        </div>
+        <section class="install-guide" aria-live="polite">
+          <div class="install-guide-icon" aria-hidden="true">↓</div>
+          <div>
+            <p id="installGuideIntro">正在检查当前浏览器的安装方式。</p>
+            <ol id="installGuideSteps"></ol>
+            <p class="account-note" id="installGuideNote"></p>
+          </div>
+        </section>
+        <div class="modal-actions">
+          <button class="secondary-button" id="dismissInstallGuideButton" type="button">稍后</button>
+          <button class="primary-button" id="retryInstallButton" type="button">重新检查</button>
+        </div>
       </div>
     </dialog>
 

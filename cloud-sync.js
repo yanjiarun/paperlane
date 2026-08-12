@@ -10,6 +10,26 @@
     saved_papers: "user_id,paper_id",
   };
 
+  class CloudRequestError extends Error {
+    constructor(message, status = 0, payload = null) {
+      super(message);
+      this.name = "CloudRequestError";
+      this.status = status;
+      this.payload = payload;
+    }
+  }
+
+  function jwtRole(key) {
+    if (!key || key.split(".").length !== 3) return "";
+    try {
+      const encoded = key.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      const padded = encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=");
+      return JSON.parse(atob(padded))?.role || "";
+    } catch {
+      return "";
+    }
+  }
+
   class PaperlaneCloud {
     constructor(store) {
       const config = window.PAPERLANE_SUPABASE || {};
@@ -18,10 +38,23 @@
       this.store = store;
       this.session = null;
       this.syncing = false;
+      this.syncPromise = null;
+    }
+
+    get configurationIssue() {
+      const configuredIssue = String((window.PAPERLANE_SUPABASE || {}).configurationIssue || "").trim();
+      if (configuredIssue) return configuredIssue;
+      if (!this.url && !this.anonKey) return "尚未填写 Supabase Project URL 和 publishable key";
+      if (!/^https:\/\/.+\.supabase\.co$/i.test(this.url)) return "Supabase Project URL 格式不正确";
+      if (!this.anonKey || this.anonKey.length <= 20) return "Supabase publishable key 为空或格式不正确";
+      if (this.anonKey.startsWith("sb_secret_") || jwtRole(this.anonKey) === "service_role") {
+        return "检测到高权限密钥：浏览器端只能使用 publishable key 或旧版 anon key";
+      }
+      return "";
     }
 
     get configured() {
-      return /^https:\/\/.+\.supabase\.co$/i.test(this.url) && this.anonKey.length > 20;
+      return !this.configurationIssue;
     }
 
     get user() {
@@ -33,12 +66,18 @@
       const saved = await this.store.getMeta("authSession");
       if (!saved || saved.projectUrl !== this.url) return null;
       this.session = saved.session;
+      if (!navigator.onLine) return this.user;
       try {
         await this.ensureSession();
         return this.user;
-      } catch {
-        await this.clearSession();
-        return null;
+      } catch (error) {
+        if (error instanceof CloudRequestError && [400, 401, 403].includes(error.status)) {
+          await this.clearSession();
+          return null;
+        }
+        // A sleeping Free Plan project or a temporary network failure must not
+        // silently sign the user out. The saved refresh token can retry later.
+        return this.user;
       }
     }
 
@@ -49,16 +88,36 @@
     }
 
     async request(path, options = {}, authenticated = false) {
-      const response = await fetch(`${this.url}${path}`, {
-        ...options,
-        headers: { ...this.headers(authenticated), ...(options.headers || {}) },
-      });
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 20000);
+      let response;
+      try {
+        response = await fetch(`${this.url}${path}`, {
+          ...options,
+          signal: options.signal || controller.signal,
+          headers: { ...this.headers(authenticated), ...(options.headers || {}) },
+        });
+      } catch (error) {
+        if (error?.name === "AbortError") throw new CloudRequestError("连接 Supabase 超时；免费项目可能正在恢复，请稍后重试");
+        throw new CloudRequestError("无法连接 Supabase；请检查网络，或在 Supabase Dashboard 中确认免费项目未暂停");
+      } finally {
+        window.clearTimeout(timeout);
+      }
       const text = await response.text();
       let payload = null;
       if (text) {
         try { payload = JSON.parse(text); } catch { payload = { message: text }; }
       }
-      if (!response.ok) throw new Error(payload?.msg || payload?.message || payload?.error_description || `云端返回 ${response.status}`);
+      if (!response.ok) {
+        const rawMessage = payload?.msg || payload?.message || payload?.error_description || payload?.error || `云端返回 ${response.status}`;
+        const schemaMissing = response.status === 404 || /relation .* does not exist|could not find the table|schema cache/i.test(rawMessage);
+        const message = schemaMissing
+          ? "云端数据表不存在；请在 Supabase SQL Editor 中完整运行 supabase-schema.sql"
+          : [401, 403].includes(response.status)
+            ? "Supabase 拒绝了请求；请检查 publishable key、邮箱确认状态和 RLS 配置"
+            : rawMessage;
+        throw new CloudRequestError(message, response.status, payload);
+      }
       return payload;
     }
 
@@ -159,9 +218,9 @@
     }
 
     async sync(namespace) {
-      if (this.syncing) return false;
+      if (this.syncPromise) return this.syncPromise;
       this.syncing = true;
-      try {
+      this.syncPromise = (async () => {
         await this.ensureSession();
         const remote = await this.pull();
         await this.store.mergeRemote(namespace, remote);
@@ -169,8 +228,12 @@
         await this.flush(namespace);
         await this.store.setMeta(`lastSync:${namespace}`, new Date().toISOString());
         return true;
+      })();
+      try {
+        return await this.syncPromise;
       } finally {
         this.syncing = false;
+        this.syncPromise = null;
       }
     }
   }

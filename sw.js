@@ -1,4 +1,4 @@
-const CACHE_NAME = "paperlane-shell-v10";
+const CACHE_NAME = "paperlane-shell-v11";
 const APP_SHELL = [
   "./", "./index.html", "./styles.css", "./hosting-config.js", "./supabase-config.js", "./storage.js",
   "./cloud-sync.js", "./app.js", "./version.json", "./manifest.webmanifest",

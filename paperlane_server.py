@@ -2,6 +2,7 @@
 """Local Paperlane server and public academic-feed aggregator."""
 
 import argparse
+import base64
 import concurrent.futures
 import email.utils
 import gzip
@@ -820,6 +821,17 @@ def write_compact_json(path, payload):
     temporary.replace(path)
 
 
+def supabase_key_role(value):
+    """Return the role embedded in a legacy JWT key, if one is present."""
+    try:
+        payload = value.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload.encode("ascii"))
+        return json.loads(decoded.decode("utf-8")).get("role", "")
+    except (IndexError, ValueError, TypeError, UnicodeError):
+        return ""
+
+
 def build_static_site(output_directory, refresh=True, range_days=STATIC_RANGE_DAYS, ieee_scope=STATIC_IEEE_SCOPE):
     output = Path(output_directory).resolve()
     if output == ROOT or output in ROOT.parents:
@@ -902,18 +914,33 @@ def build_static_site(output_directory, refresh=True, range_days=STATIC_RANGE_DA
     (output / "hosting-config.js").write_text("window.PAPERLANE_STATIC_DATA = true;\n", encoding="ascii")
 
     supabase_url = os.environ.get("PAPERLANE_SUPABASE_URL", "").strip()
-    supabase_anon_key = os.environ.get("PAPERLANE_SUPABASE_ANON_KEY", "").strip()
-    if supabase_url and supabase_anon_key:
-        config = (
-            "// Generated from GitHub repository variables. Never use a service_role key here.\n"
-            "window.PAPERLANE_SUPABASE = Object.freeze({\n"
-            "  url: %s,\n"
-            "  anonKey: %s,\n"
-            "});\n"
-        ) % (json.dumps(supabase_url), json.dumps(supabase_anon_key))
-        (output / "supabase-config.js").write_text(config, encoding="utf-8")
+    supabase_public_key = (
+        os.environ.get("PAPERLANE_SUPABASE_PUBLISHABLE_KEY", "").strip()
+        or os.environ.get("PAPERLANE_SUPABASE_ANON_KEY", "").strip()
+    )
+    if supabase_public_key.startswith("sb_secret_") or supabase_key_role(supabase_public_key) == "service_role":
+        raise ValueError("检测到 Supabase secret/service_role key；静态网页只能使用 publishable/anon key")
+    configuration_issue = ""
+    if not supabase_url or not supabase_public_key:
+        configuration_issue = (
+            "GitHub Pages 构建未收到 SUPABASE_URL 和 SUPABASE_PUBLISHABLE_KEY；"
+            "设置 Repository variables 后请重新运行 Pages workflow"
+        )
+    config = (
+        "// Generated at build time. Never use a secret or service_role key here.\n"
+        "window.PAPERLANE_SUPABASE = Object.freeze({\n"
+        "  url: %s,\n"
+        "  anonKey: %s,\n"
+        "  configurationIssue: %s,\n"
+        "});\n"
+    ) % (
+        json.dumps(supabase_url),
+        json.dumps(supabase_public_key),
+        json.dumps(configuration_issue, ensure_ascii=False),
+    )
+    (output / "supabase-config.js").write_text(config, encoding="utf-8")
 
-    source_version = {"version": "0.5.0"}
+    source_version = {"version": "0.5.1"}
     try:
         with (ROOT / "version.json").open("r", encoding="utf-8") as handle:
             source_version.update(json.load(handle))
@@ -928,7 +955,7 @@ def build_static_site(output_directory, refresh=True, range_days=STATIC_RANGE_DA
     if revision and revision != "local":
         service_worker_path = output / "sw.js"
         service_worker = service_worker_path.read_text(encoding="utf-8")
-        service_worker = service_worker.replace("paperlane-shell-v10", "paperlane-shell-{}".format(revision))
+        service_worker = re.sub(r"paperlane-shell-v\d+", "paperlane-shell-{}".format(revision), service_worker)
         service_worker_path.write_text(service_worker, encoding="utf-8")
     write_compact_json(output / "version.json", source_version)
     write_compact_json(output / "data" / "catalog.json", {

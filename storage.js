@@ -24,6 +24,13 @@
     return new Date().toISOString();
   }
 
+  function compareTimestamps(left, right) {
+    const leftTime = Date.parse(left || "");
+    const rightTime = Date.parse(right || "");
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return leftTime - rightTime;
+    return String(left || "").localeCompare(String(right || ""));
+  }
+
   function namespaceUserId(namespace) {
     return namespace.startsWith("user:") ? namespace.slice(5) : "";
   }
@@ -295,7 +302,10 @@
       });
       const pending = await this.getOutbox(namespace);
       const superseded = pending
-        .filter((item) => remoteTimes.get(`${item.table}|${item.recordId}`) >= item.updatedAt)
+        .filter((item) => {
+          const remoteTime = remoteTimes.get(`${item.table}|${item.recordId}`);
+          return remoteTime && compareTimestamps(remoteTime, item.updatedAt) >= 0;
+        })
         .map((item) => item.key);
       await this.removeOutbox(superseded);
       return superseded.length;
@@ -344,7 +354,7 @@
           const row = rows[0];
           if (!row) continue;
           const current = await this.get("meta", `settings:${namespace}`);
-          if (!current?.value?.updatedAt || row.updated_at >= current.value.updatedAt) {
+          if (!current?.value?.updatedAt || compareTimestamps(row.updated_at, current.value.updatedAt) >= 0) {
             await this.saveSettings(namespace, {
               enabledSources: row.enabled_sources,
               rangeDays: row.range_days,
@@ -357,7 +367,10 @@
         if (!mapping || !rows.length) continue;
         const [storeName, convert] = mapping;
         const existing = new Map((await this.getByNamespace(storeName, namespace)).map((record) => [record.key, record]));
-        const accepted = rows.map(convert).filter((record) => !existing.get(record.key)?.updatedAt || record.updatedAt >= existing.get(record.key).updatedAt);
+        const accepted = rows.map(convert).filter((record) => {
+          const localUpdatedAt = existing.get(record.key)?.updatedAt;
+          return !localUpdatedAt || compareTimestamps(record.updatedAt, localUpdatedAt) >= 0;
+        });
         if (!accepted.length) continue;
         const transaction = this.db.transaction(storeName, "readwrite");
         const store = transaction.objectStore(storeName);

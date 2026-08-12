@@ -40,10 +40,26 @@ jobs:
           restore-keys: |
             paperlane-history-
 
+      - name: Check cloud sync configuration
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+        shell: bash
+        run: |
+          if [[ -z "$SUPABASE_URL" || ( -z "$SUPABASE_PUBLISHABLE_KEY" && -z "$SUPABASE_ANON_KEY" ) ]]; then
+            echo "::warning title=Supabase sync disabled::Set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in Settings > Secrets and variables > Actions > Variables, then rerun this workflow."
+            echo "### ⚠️ Supabase 云同步未注入" >> "$GITHUB_STEP_SUMMARY"
+            echo "请设置 Repository variables：SUPABASE_URL、SUPABASE_PUBLISHABLE_KEY，然后重新运行工作流。" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ✅ Supabase 云同步配置已注入" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Build static paper feeds
         env:
           PAPERLANE_REVISION: ${{ github.sha }}
           PAPERLANE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          PAPERLANE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
           PAPERLANE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
         run: python paperlane_server.py --build-static _site --days 365 --ieee-scope ea+5
 

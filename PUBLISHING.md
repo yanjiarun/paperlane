@@ -40,12 +40,14 @@ GitHub Pages 上的刷新按钮用于检查最近一次 Actions 生成的数据�
 
 **Settings > Secrets and variables > Actions > Variables**
 
-新增两个 Repository variable：
+新增两个 Repository variable（变量名必须完全一致）：
 
 - **SUPABASE_URL**：Supabase Project URL。
-- **SUPABASE_ANON_KEY**：Supabase anon public key。
+- **SUPABASE_PUBLISHABLE_KEY**：Supabase Project Settings > API Keys 中的 publishable key（通常以 `sb_publishable_` 开头）。
 
-它们会在构建网站时写入公开前端配置。anon key 本来就是公开密钥，RLS 才是数据隔离边界。不要添加 service_role key。
+旧项目的 legacy anon key 也能使用：可把它放在 **SUPABASE_ANON_KEY** 变量中；如果同时设置，新版 **SUPABASE_PUBLISHABLE_KEY** 优先。
+
+这些低权限 key 会在构建网站时写入公开前端配置，这是 Supabase 针对浏览器应用的设计；RLS 才是用户数据隔离边界。绝对不要添加 `sb_secret_...`、secret key 或 service_role key，构建脚本检测到它们时会直接报错。
 
 然后在 Supabase 的 **Authentication > URL Configuration** 中：
 
@@ -53,12 +55,27 @@ GitHub Pages 上的刷新按钮用于检查最近一次 Actions 生成的数据�
 2. 将同一个地址加入 Redirect URLs。
 3. 保留本机开发地址 http://localhost:8765 作为额外 Redirect URL。
 
-再次运行 Pages workflow 后，网页端注册和登录就会启用。
+最后必须在 GitHub 的 **Actions > Deploy Paperlane to GitHub Pages > Run workflow** 再运行一次。只新增 Repository variables 不会自动触发部署。
+
+验证方法：
+
+1. 打开最新一次 workflow，`Check cloud sync configuration` 应显示绿色的“配置已注入”，而不是黄色 warning。
+2. 打开 `https://你的GitHub用户名.github.io/paperlane/supabase-config.js`，确认 url 和 anonKey 不为空。
+3. 打开 Paperlane 右上角账号窗口，应显示邮箱和密码输入框可用，不再显示“线上未注入 Supabase 配置”。
+4. 注册、确认邮箱并登录；标记一篇论文后点击“立即同步”，再在另一台设备登录同一账号验证。
+
+常见错误：
+
+- “云端数据表不存在”：回到 Supabase SQL Editor，完整运行 **supabase-schema.sql**。
+- “Supabase 拒绝了请求”：检查是否误用了 secret/service_role key、邮箱是否已确认，以及 schema 中的 RLS policy 是否已创建。
+- “无法连接/连接超时”：免费项目可能因低活跃暂停；到 Supabase Dashboard 点击 **Resume project**，等待恢复后重试。
+- 确认邮件跳到 localhost：Supabase 的 Site URL 没有设置为完整的 Pages 地址（包括 `/paperlane/` 和末尾斜杠）。
 
 ## 四、多端安装
 
-- Windows / macOS / Android：使用 Chrome 或 Edge 打开 Pages 地址，选择地址栏或浏览器菜单中的“安装应用”。
+- Windows / macOS / Android：使用 Chrome 或 Edge 打开 Pages 地址。浏览器提供 `beforeinstallprompt` 后，Paperlane 按钮会直接弹出安装窗口；在这之前按钮会显示按平台区分的安装步骤。
 - iPhone / iPad：使用 Safari 打开，选择“分享 > 添加到主屏幕”。
+- 微信、QQ 等应用内浏览器：先通过右上角菜单选择“在浏览器打开”，再安装。
 - 不安装也可以直接作为普通网页使用。
 
 同一账号登录后，各设备同步已读、重要、分组和期刊设置。断网时操作保存在本机，联网后再同步。
@@ -87,6 +104,6 @@ GitHub Pages 上的刷新按钮用于检查最近一次 Actions 生成的数据�
 - GitHub Pages 适合个人和开源项目，不用于高流量商业后端。
 - 公开仓库的标准 GitHub Actions 通常不计费；私有仓库受账号分钟数限制。
 - GitHub 可能暂停 60 天没有仓库活动的公开仓库定时工作流，重新运行或提交一次即可恢复。
-- Supabase 免费层有数据库、流量和活跃项目限制，个人论文阅读状态通常远低于额度。
+- Supabase 免费层包含 500 MB 数据库、5 GB egress 和 50,000 MAU 等额度，个人论文阅读状态通常远低于额度；低活跃免费项目可能在一周后暂停，可在 Dashboard 中恢复。
 - IEEE、Nature、Science 和 arXiv 的公开接口仍可能临时限流；构建会保留已有历史数据并在下一轮重试。
 - GitHub Actions 展示的是定时更新数据，最多可能比来源网站晚约 6 小时。本机 Python 模式仍可手动实时刷新。
