@@ -33,7 +33,7 @@
   class PaperlaneCloud {
     constructor(store) {
       const config = window.PAPERLANE_SUPABASE || {};
-      this.url = String(config.url || "").replace(/\/$/, "");
+      this.url = String(config.url || "").trim().replace(/\/+(?:rest\/v1)?\/?$/i, "");
       this.anonKey = String(config.anonKey || "");
       this.store = store;
       this.session = null;
@@ -45,7 +45,7 @@
       const configuredIssue = String((window.PAPERLANE_SUPABASE || {}).configurationIssue || "").trim();
       if (configuredIssue) return configuredIssue;
       if (!this.url && !this.anonKey) return "尚未填写 Supabase Project URL 和 publishable key";
-      if (!/^https:\/\/.+\.supabase\.co$/i.test(this.url)) return "Supabase Project URL 格式不正确";
+      if (!/^https:\/\/.+\.supabase\.co$/i.test(this.url)) return "Supabase Project URL 格式不正确；应填写 https://项目编号.supabase.co，不要附加 /rest/v1/";
       if (!this.anonKey || this.anonKey.length <= 20) return "Supabase publishable key 为空或格式不正确";
       if (this.anonKey.startsWith("sb_secret_") || jwtRole(this.anonKey) === "service_role") {
         return "检测到高权限密钥：浏览器端只能使用 publishable key 或旧版 anon key";

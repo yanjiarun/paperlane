@@ -632,6 +632,7 @@ function renderPaper(paper) {
     ? `${paper.issueLabel}${paper.issueType === "early-access" ? ` · ${paper.date.slice(0, 4)}` : ""}`
     : `${relativeDate(paper.date)} · ${formatDate(paper.date)}`;
   const abstractExpanded = expandedAbstracts.has(paper.id);
+  const abstractExcerpt = /(?:\.\.\.|…)$/.test(String(paper.abstract || "").trim());
   return `
     <article class="paper-card ${isRead ? "read" : ""} ${isImportant ? "important" : ""}" data-paper-id="${escapeHtml(paper.id)}">
       <div class="paper-topline">
@@ -650,7 +651,8 @@ function renderPaper(paper) {
       <p class="paper-authors">${escapeHtml(paper.authors)}</p>
       <div class="paper-abstract-wrap">
         <p class="paper-abstract ${abstractExpanded ? "expanded" : ""}">${escapeHtml(paper.abstract)}</p>
-        <button class="abstract-toggle" type="button" data-action="abstract" aria-expanded="${abstractExpanded}" ${abstractExpanded || collapsibleAbstracts.has(paper.id) ? "" : "hidden"}>${abstractExpanded ? "收起摘要" : "展开摘要"}</button>
+        <button class="abstract-toggle" type="button" data-action="abstract" aria-expanded="${abstractExpanded}" ${abstractExpanded || collapsibleAbstracts.has(paper.id) ? "" : "hidden"}>${abstractExpanded ? "收起摘要" : abstractExcerpt ? "展开摘要片段" : "展开摘要"}</button>
+        ${abstractExpanded && abstractExcerpt ? `<span class="abstract-source-note">来源只提供摘要片段，请查看原文获取完整内容</span>` : ""}
       </div>
       <div class="paper-footer">
         <div class="paper-tags">${(Array.isArray(paper.tags) ? paper.tags : []).map((tag) => `<span class="paper-tag">${escapeHtml(tag)}</span>`).join("")}</div>
@@ -877,11 +879,20 @@ async function fetchStaticPapers(force) {
   const catalog = await catalogResponse.json();
   const catalogStatuses = new Map((catalog.sources || []).map((source) => [source.id, source]));
   const versionToken = encodeURIComponent(catalog.fetchedAt || catalog.generatedAt || Date.now());
-  const results = await Promise.all(state.enabledSources.map(async (sourceId) => {
+  const loadSource = async (sourceId) => {
     const source = sourceCatalog.find((item) => item.id === sourceId);
     try {
-      const response = await fetch(`./data/sources/${encodeURIComponent(sourceId)}.json?v=${versionToken}`, { cache: "no-store" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      let response;
+      let lastError;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          response = await fetch(`./data/sources/${encodeURIComponent(sourceId)}.json?v=${versionToken}`, { cache: "no-store" });
+          if (response.ok) break;
+          lastError = new Error(`HTTP ${response.status}`);
+        } catch (error) { lastError = error; }
+        await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+      }
+      if (!response?.ok) throw lastError || new Error("请求失败");
       const payload = await response.json();
       if (!Array.isArray(payload.papers)) throw new Error("数据格式无效");
       return { sourceId, papers: payload.papers, status: payload.status || catalogStatuses.get(sourceId) || {} };
@@ -891,7 +902,11 @@ async function fetchStaticPapers(force) {
         status: { error: `${source?.label || sourceId}: ${error.message}`, limited: true },
       };
     }
-  }));
+  };
+  const results = [];
+  const queue = [...state.enabledSources];
+  const worker = async () => { while (queue.length) results.push(await loadSource(queue.shift())); };
+  await Promise.all([worker(), worker(), worker()]);
   const unique = new Map();
   results.flatMap((result) => result.papers).forEach((paper) => unique.set(paper.id, paper));
   const errors = results.filter((result) => result.status.error).map((result) => ({
@@ -943,7 +958,6 @@ async function refreshPapers(force = true, quiet = false) {
     state.dataUpdatedAt = payload.fetchedAt || "";
     if (state.dataUpdatedAt) completedLabel = `数据更新于 ${formatUpdateMoment(state.dataUpdatedAt)}`;
     feedPapers = payload.papers;
-    await store.savePaperCache(feedPapers);
     await loadWorkspace(activeNamespace, false);
     state.renderLimit = PAGE_SIZE;
     const errorCount = Array.isArray(payload.errors) ? payload.errors.length : 0;
@@ -956,6 +970,7 @@ async function refreshPapers(force = true, quiet = false) {
     els.sourceStripMeta.textContent = `${status} · ${coverage} · ${coverageState}`;
     updateConnectionState();
     render();
+    store.savePaperCache(feedPapers).catch(() => {});
     if (!quiet) {
       if (!payload.papers.length && !errorCount) showToast("所选范围内暂无论文");
       else if (errorCount) showToast(`已更新 ${payload.papers.length} 篇，${errorCount} 个来源暂不可用`);
@@ -1436,6 +1451,7 @@ async function initializeApp() {
     await store.migrateLegacy(defaultGroups);
     const cachedPapers = await store.loadPaperCache();
     if (cachedPapers) feedPapers = cachedPapers;
+    else if (usesStaticData()) feedPapers = [];
   }
   const restoredUser = storageReady ? await cloud.init() : null;
   activeNamespace = restoredUser ? `user:${restoredUser.id}` : "guest";
