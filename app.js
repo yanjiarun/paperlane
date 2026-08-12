@@ -1261,13 +1261,13 @@ function showInstallGuide() {
   } else if (inAppBrowser) {
     title = "请先用系统浏览器打开";
     intro = "微信、QQ 等应用内浏览器通常不开放 PWA 安装功能。";
-    steps = ["点击右上角菜单并选择“在浏览器打开”。", "优先选择 Chrome、Edge 或系统浏览器。", "回到 Paperlane 后再次点击安装。"];
+    steps = ["点击右上角菜单并选择“在浏览器打开”。", "使用手机自带浏览器或其他支持网页应用的浏览器继续打开。", "回到 Paperlane 后再次点击安装。"];
     note = "切换到支持 PWA 的浏览器后，安装按钮会在浏览器准备就绪时直接打开安装窗口。";
   } else if (android) {
     title = "安装到 Android";
     intro = "浏览器尚未提供原生安装窗口，可以先从浏览器菜单安装。";
     steps = ["确认当前页面使用 HTTPS 打开。", "打开浏览器右上角主菜单。", "选择“安装应用”或“添加到主屏幕”。"];
-    note = "Chrome 可能需要先在页面停留片刻并进行一次点击，之后 Paperlane 的安装按钮会自动切换为可直接安装。";
+    note = "部分浏览器需要先在页面停留片刻并进行一次点击；如果网页没有直接弹窗，请使用浏览器菜单中的安装或添加到主屏幕。";
   }
 
   els.installGuideTitle.textContent = title;

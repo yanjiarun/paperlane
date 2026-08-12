@@ -73,7 +73,7 @@ GitHub Pages 上的刷新按钮用于检查最近一次 Actions 生成的数据�
 
 ## 四、多端安装
 
-- Windows / macOS / Android：使用 Chrome 或 Edge 打开 Pages 地址。浏览器提供 `beforeinstallprompt` 后，Paperlane 按钮会直接弹出安装窗口；在这之前按钮会显示按平台区分的安装步骤。
+- Windows / macOS / Android：使用设备自带浏览器或其他支持网页应用的浏览器打开 Pages 地址。浏览器提供 `beforeinstallprompt` 后，Paperlane 按钮会直接弹出安装窗口；在这之前按钮会显示按平台区分的安装步骤，也可以直接使用浏览器菜单中的“安装应用”“添加到主屏幕”或“创建快捷方式”。
 - iPhone / iPad：使用 Safari 打开，选择“分享 > 添加到主屏幕”。
 - 微信、QQ 等应用内浏览器：先通过右上角菜单选择“在浏览器打开”，再安装。
 - 不安装也可以直接作为普通网页使用。
