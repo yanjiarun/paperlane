@@ -28,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 CACHE_PATH = ROOT / "paper-cache.json"
 HISTORY_PATH = ROOT / "paper-history.json"
+SOURCE_CACHE_PATH = ROOT / "paper-source-cache.json"
 CACHE_SECONDS = 30 * 60
 HISTORY_RETENTION_DAYS = 730
 DEFAULT_RANGE_DAYS = 30
@@ -505,6 +506,9 @@ def fetch_ieee(config, scope=DEFAULT_IEEE_SCOPE):
                 formal_issues = flatten_ieee_issues(issue_payload)[:issue_count]
             collections.extend((issue, False) for issue in formal_issues)
 
+        if not collections:
+            raise ValueError("IEEE Xplore 未返回可用期次")
+
         papers = []
         limited = False
         formal_rank = 0
@@ -516,6 +520,8 @@ def fetch_ieee(config, scope=DEFAULT_IEEE_SCOPE):
                 paper["ieeeIssueRank"] = 0 if early_access else formal_rank
             papers.extend(collection_papers)
             limited = limited or collection_limited
+        if not papers:
+            raise ValueError("IEEE Xplore 可用期次未返回论文")
         return {
             "papers": deduplicate(papers),
             "limited": limited,
@@ -524,6 +530,8 @@ def fetch_ieee(config, scope=DEFAULT_IEEE_SCOPE):
         }
     except Exception as error:
         papers = fetch_feed(config)
+        if not papers:
+            raise RuntimeError("IEEE Xplore 与 RSS 均未返回论文：{}".format(error))
         for paper in papers:
             paper["ieeeIssueRank"] = 0 if paper.get("issueType") == "early-access" else 1
         return {
@@ -678,6 +686,68 @@ def save_history(papers):
     temporary.replace(HISTORY_PATH)
 
 
+def load_source_cache():
+    try:
+        with SOURCE_CACHE_PATH.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        entries = payload.get("entries", {}) if isinstance(payload, dict) else {}
+        return entries if isinstance(entries, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def save_source_cache(entries):
+    temporary = SOURCE_CACHE_PATH.with_suffix(".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(
+            {"updatedAt": utc_now().isoformat(), "entries": entries},
+            handle,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    temporary.replace(SOURCE_CACHE_PATH)
+
+
+def source_cache_key(source_id, ieee_scope=DEFAULT_IEEE_SCOPE):
+    return "{}|{}".format(source_id, ieee_scope) if source_id in IEEE_SOURCE_IDS else source_id
+
+
+def update_source_cache(fresh, ieee_scope=DEFAULT_IEEE_SCOPE):
+    entries = load_source_cache()
+    changed = False
+    for status in fresh.get("sources", []):
+        source_id = status.get("id")
+        if not source_id or status.get("error"):
+            continue
+        papers = [paper for paper in fresh.get("papers", []) if paper.get("sourceId") == source_id]
+        if not papers:
+            continue
+        entries[source_cache_key(source_id, ieee_scope)] = {
+            "sourceId": source_id,
+            "ieeeScope": ieee_scope if source_id in IEEE_SOURCE_IDS else "",
+            "updatedAt": fresh.get("fetchedAt") or utc_now().isoformat(),
+            "papers": deduplicate(papers),
+        }
+        changed = True
+    if changed:
+        save_source_cache(entries)
+    return entries
+
+
+def source_fallback_papers(source_id, ieee_scope, source_cache, fallback_payload=None):
+    entry = source_cache.get(source_cache_key(source_id, ieee_scope), {})
+    papers = entry.get("papers", []) if isinstance(entry, dict) else []
+    if papers:
+        return papers
+    if (
+        fallback_payload
+        and fallback_payload.get("ieeeScope") == ieee_scope
+        and isinstance(fallback_payload.get("papers"), list)
+    ):
+        return [paper for paper in fallback_payload["papers"] if paper.get("sourceId") == source_id]
+    return []
+
+
 def merge_history(fresh_papers):
     retention_from = (utc_now().date() - timedelta(days=HISTORY_RETENTION_DAYS)).isoformat()
     merged = deduplicate(load_history() + fresh_papers)
@@ -689,7 +759,14 @@ def merge_history(fresh_papers):
     return retained
 
 
-def build_range_payload(fresh, selected, range_days, ieee_scope=DEFAULT_IEEE_SCOPE):
+def build_range_payload(
+    fresh,
+    selected,
+    range_days,
+    ieee_scope=DEFAULT_IEEE_SCOPE,
+    source_cache=None,
+    fallback_payload=None,
+):
     cutoff = range_cutoff(range_days)
     history = merge_history(fresh["papers"])
     ranged_papers = [
@@ -698,7 +775,18 @@ def build_range_payload(fresh, selected, range_days, ieee_scope=DEFAULT_IEEE_SCO
         and paper.get("sourceId") not in IEEE_SOURCE_IDS
         and paper.get("date", "1970-01-01") >= cutoff
     ]
+    source_cache = source_cache if source_cache is not None else load_source_cache()
+    status_by_id = {status["id"]: status for status in fresh["sources"]}
     ieee_papers = [paper for paper in fresh["papers"] if paper.get("sourceId") in selected and paper.get("sourceId") in IEEE_SOURCE_IDS]
+    stale_sources = []
+    for source_id in selected:
+        status = status_by_id.get(source_id, {})
+        if source_id not in IEEE_SOURCE_IDS or not status.get("error"):
+            continue
+        fallback_papers = source_fallback_papers(source_id, ieee_scope, source_cache, fallback_payload)
+        if fallback_papers:
+            ieee_papers.extend(fallback_papers)
+            stale_sources.append(source_id)
     papers = deduplicate(ranged_papers + ieee_papers)
     statuses = []
     for status in fresh["sources"]:
@@ -711,15 +799,19 @@ def build_range_payload(fresh, selected, range_days, ieee_scope=DEFAULT_IEEE_SCO
                 limited = len(current_dates) >= ARXIV_MAX_RESULTS
             elif source_id not in IEEE_SOURCE_IDS:
                 limited = not current_dates or min(current_dates) > cutoff
+        fallback_used = source_id in stale_sources
+        note = status.get("note", "")
+        if fallback_used:
+            note = "{}；{}".format(note, "本轮获取失败，已保留上次可用数据").strip("；")
         statuses.append(
             {
                 "id": source_id,
                 "label": status["label"],
-                "count": len(returned_dates),
+                "count": sum(1 for paper in papers if paper.get("sourceId") == source_id),
                 "error": status["error"],
                 "coverageFrom": min(returned_dates) if returned_dates else "",
-                "limited": limited,
-                "note": status.get("note", ""),
+                "limited": limited or fallback_used,
+                "note": note,
                 "mode": status.get("mode", ""),
             }
         )
@@ -738,6 +830,7 @@ def build_range_payload(fresh, selected, range_days, ieee_scope=DEFAULT_IEEE_SCO
         "requestedFrom": cutoff,
         "coverageFrom": min(coverage_dates) if coverage_dates else "",
         "coverageLimited": any(status["limited"] for status in statuses),
+        "staleSources": stale_sources,
         "historySize": len(history),
         "cached": False,
         "stale": False,
@@ -761,10 +854,22 @@ def get_papers(force=False, selected_sources=None, range_days=DEFAULT_RANGE_DAYS
             return cached
 
         fresh = collect_papers(selected, range_days=range_days, ieee_scope=ieee_scope)
+        source_cache = update_source_cache(fresh, ieee_scope)
         has_successful_source = any(not status["error"] for status in fresh["sources"])
+        payload = build_range_payload(
+            fresh,
+            selected,
+            range_days,
+            ieee_scope=ieee_scope,
+            source_cache=source_cache,
+            fallback_payload=cached,
+        )
         if has_successful_source:
-            payload = build_range_payload(fresh, selected, range_days, ieee_scope=ieee_scope)
             save_cache(payload)
+            return payload
+        if payload["papers"]:
+            payload["cached"] = True
+            payload["stale"] = True
             return payload
         if cached and cache_matches:
             cached["cached"] = True
@@ -844,6 +949,7 @@ def build_static_site(output_directory, refresh=True, range_days=STATIC_RANGE_DA
 
     if refresh:
         fresh = collect_papers(ALL_SOURCE_IDS, range_days=range_days, ieee_scope=ieee_scope)
+        source_cache = update_source_cache(fresh, ieee_scope)
         history = merge_history(fresh["papers"])
     else:
         fresh = load_cache() or {
@@ -853,6 +959,7 @@ def build_static_site(output_directory, refresh=True, range_days=STATIC_RANGE_DA
             "fetchedAt": utc_now().isoformat(),
             "requestedSources": [],
         }
+        source_cache = load_source_cache()
         history = load_history()
 
     status_by_id = {status["id"]: status for status in fresh.get("sources", [])}
@@ -870,12 +977,20 @@ def build_static_site(output_directory, refresh=True, range_days=STATIC_RANGE_DA
         if is_ieee:
             papers = fresh_by_source[source_id]
             if not papers:
-                papers = [
-                    paper for paper in history
-                    if paper.get("sourceId") == source_id and paper.get("date", "1970-01-01") >= cutoff
-                ]
-                for paper in papers:
-                    paper.setdefault("ieeeIssueRank", 0 if paper.get("issueType") == "early-access" else 1)
+                papers = source_fallback_papers(source_id, ieee_scope, source_cache, fresh)
+                if papers:
+                    status["limited"] = True
+                    status["note"] = "{}；{}".format(
+                        status.get("note", ""),
+                        "本轮获取失败，已保留上次可用数据",
+                    ).strip("；")
+                else:
+                    papers = [
+                        dict(paper) for paper in history
+                        if paper.get("sourceId") == source_id and paper.get("date", "1970-01-01") >= cutoff
+                    ]
+                    for paper in papers:
+                        paper.setdefault("ieeeIssueRank", 0 if paper.get("issueType") == "early-access" else 1)
         else:
             papers = [
                 paper for paper in history

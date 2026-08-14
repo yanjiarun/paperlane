@@ -315,6 +315,7 @@ const cloud = new window.PaperlaneCloud(store);
 let feedPapers = [...seedPapers];
 let activeNamespace = "guest";
 let syncTimer = 0;
+let refreshSequence = 0;
 
 const els = {
   sourceNav: document.querySelector("#sourceNav"),
@@ -424,7 +425,6 @@ async function loadWorkspace(namespace, seedGroups = false) {
   });
   const knownIds = new Set(state.papers.map((paper) => paper.id));
   workspace.snapshots.filter((record) => !record.deletedAt && record.snapshot && !knownIds.has(record.paperId)).forEach((record) => state.papers.push(record.snapshot));
-  state.renderLimit = PAGE_SIZE;
   els.timeRangeSelect.value = String(state.rangeDays);
   els.ieeeScopeSelect.value = state.ieeeScope;
 }
@@ -872,7 +872,7 @@ function formatUpdateMoment(value) {
   }).format(date);
 }
 
-async function fetchStaticPapers(force) {
+async function fetchStaticPapers(force, requestedSources) {
   const suffix = force ? `?refresh=${Date.now()}` : "";
   const catalogResponse = await fetch(`./data/catalog.json${suffix}`, { cache: "no-store" });
   if (!catalogResponse.ok) throw new Error(`静态数据目录返回 ${catalogResponse.status}`);
@@ -904,7 +904,7 @@ async function fetchStaticPapers(force) {
     }
   };
   const results = [];
-  const queue = [...state.enabledSources];
+  const queue = [...requestedSources];
   const worker = async () => { while (queue.length) results.push(await loadSource(queue.shift())); };
   await Promise.all([worker(), worker(), worker()]);
   const unique = new Map();
@@ -923,14 +923,56 @@ async function fetchStaticPapers(force) {
     fetchedAt: catalog.fetchedAt || catalog.generatedAt,
     coverageFrom: coverageDates.length ? coverageDates.sort()[0] : "",
     coverageLimited: results.some((result) => result.status.limited),
-    requestedSources: [...state.enabledSources],
+    requestedSources: [...requestedSources],
     static: true,
     cached: false,
     stale: false,
   };
 }
 
+function dataSettingsMatch(snapshot) {
+  return snapshot.rangeDays === state.rangeDays
+    && snapshot.ieeeScope === state.ieeeScope
+    && snapshot.enabledSources.length === state.enabledSources.length
+    && snapshot.enabledSources.every((sourceId, index) => sourceId === state.enabledSources[index]);
+}
+
+function preserveFailedSourcePapers(papers, errors, requestedSources) {
+  const requested = new Set(requestedSources);
+  const failed = new Set((Array.isArray(errors) ? errors : [])
+    .map((error) => error?.id)
+    .filter((sourceId) => sourceId && requested.has(sourceId)));
+  if (!failed.size) return papers;
+
+  const merged = new Map(papers.map((paper) => [paper.id, paper]));
+  feedPapers.forEach((paper) => {
+    if (failed.has(paperSourceId(paper)) && !merged.has(paper.id)) merged.set(paper.id, paper);
+  });
+  return [...merged.values()];
+}
+
+function replaceFeedPapers(papers) {
+  const oldFeedIds = new Set(feedPapers.map((paper) => paper.id));
+  const savedSnapshots = state.papers.filter((paper) => (
+    !oldFeedIds.has(paper.id)
+    || state.important[paper.id]
+    || groupIdsForPaper(paper.id).length > 0
+  ));
+  feedPapers = papers;
+  state.papers = [...feedPapers];
+  const knownIds = new Set(state.papers.map((paper) => paper.id));
+  savedSnapshots.forEach((paper) => {
+    if (!knownIds.has(paper.id)) state.papers.push(paper);
+  });
+}
+
 async function refreshPapers(force = true, quiet = false) {
+  const requestId = ++refreshSequence;
+  const requestSettings = {
+    enabledSources: [...state.enabledSources],
+    rangeDays: state.rangeDays,
+    ieeeScope: state.ieeeScope,
+  };
   let completedLabel = "刚刚更新";
   const button = document.querySelector("#refreshButton");
   if (button) {
@@ -938,31 +980,34 @@ async function refreshPapers(force = true, quiet = false) {
     button.classList.add("spinning");
   }
   els.lastUpdated.textContent = force ? "正在刷新" : "正在加载";
-  const sourceQuery = encodeURIComponent(state.enabledSources.join(","));
-  const ieeeScopeQuery = encodeURIComponent(state.ieeeScope);
-  const query = `sources=${sourceQuery}&days=${state.rangeDays}&ieee=${ieeeScopeQuery}${force ? "&refresh=1" : ""}`;
+  const sourceQuery = encodeURIComponent(requestSettings.enabledSources.join(","));
+  const ieeeScopeQuery = encodeURIComponent(requestSettings.ieeeScope);
+  const query = `sources=${sourceQuery}&days=${requestSettings.rangeDays}&ieee=${ieeeScopeQuery}${force ? "&refresh=1" : ""}`;
   const endpoint = window.location.protocol === "file:"
     ? `http://127.0.0.1:8765/api/papers?${query}`
     : `/api/papers?${query}`;
   try {
     let payload;
     if (usesStaticData()) {
-      payload = await fetchStaticPapers(force);
+      payload = await fetchStaticPapers(force, requestSettings.enabledSources);
     } else {
       const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
       if (!response.ok) throw new Error(`数据服务返回 ${response.status}`);
       payload = await response.json();
     }
     if (!Array.isArray(payload.papers)) throw new Error("论文数据格式无效");
+    if (requestId !== refreshSequence || !dataSettingsMatch(requestSettings)) return;
     state.dataMode = payload.static ? "static" : "local";
     state.dataUpdatedAt = payload.fetchedAt || "";
     if (state.dataUpdatedAt) completedLabel = `数据更新于 ${formatUpdateMoment(state.dataUpdatedAt)}`;
-    feedPapers = payload.papers;
-    await loadWorkspace(activeNamespace, false);
-    state.renderLimit = PAGE_SIZE;
     const errorCount = Array.isArray(payload.errors) ? payload.errors.length : 0;
-    const status = payload.static ? "GitHub 定时数据" : payload.cached ? (payload.stale ? "离线缓存" : "本地缓存") : "实时数据";
-    const hasDatedSource = state.enabledSources.some((sourceId) => !sourceId.startsWith("ieee-"));
+    const mergedPapers = preserveFailedSourcePapers(payload.papers, payload.errors, requestSettings.enabledSources);
+    replaceFeedPapers(mergedPapers);
+    const partialCache = Array.isArray(payload.staleSources) && payload.staleSources.length > 0;
+    const status = payload.static
+      ? "GitHub 定时数据"
+      : partialCache ? "实时数据（部分沿用缓存）" : payload.cached ? (payload.stale ? "离线缓存" : "本地缓存") : "实时数据";
+    const hasDatedSource = requestSettings.enabledSources.some((sourceId) => !sourceId.startsWith("ieee-"));
     const coverage = hasDatedSource
       ? (payload.coverageFrom ? `其他来源最早 ${payload.coverageFrom}` : "其他来源暂无论文")
       : ieeeScopeLabel();
@@ -972,12 +1017,13 @@ async function refreshPapers(force = true, quiet = false) {
     render();
     store.savePaperCache(feedPapers).catch(() => {});
     if (!quiet) {
-      if (!payload.papers.length && !errorCount) showToast("所选范围内暂无论文");
-      else if (errorCount) showToast(`已更新 ${payload.papers.length} 篇，${errorCount} 个来源暂不可用`);
-      else if (payload.coverageLimited) showToast(`已更新 ${payload.papers.length} 篇；部分来源公开订阅范围有限`);
-      else showToast(payload.static ? `已载入 ${payload.papers.length} 篇 GitHub 最新数据` : `已更新 ${payload.papers.length} 篇真实论文`);
+      if (!mergedPapers.length && !errorCount) showToast("所选范围内暂无论文");
+      else if (errorCount) showToast(`已保留可用数据，${errorCount} 个来源本轮暂不可用`);
+      else if (payload.coverageLimited) showToast(`已更新 ${mergedPapers.length} 篇；部分来源公开订阅范围有限`);
+      else showToast(payload.static ? `已载入 ${mergedPapers.length} 篇 GitHub 最新数据` : `已更新 ${mergedPapers.length} 篇真实论文`);
     }
   } catch (error) {
+    if (requestId !== refreshSequence || !dataSettingsMatch(requestSettings)) return;
     const message = window.location.protocol === "file:"
       ? "实时数据需要双击 Start-Paperlane.bat 打开"
       : usesStaticData() ? "GitHub 数据暂不可用，已保留本地缓存" : "数据服务暂时不可用，已保留本地缓存";
@@ -986,11 +1032,13 @@ async function refreshPapers(force = true, quiet = false) {
     els.connectionState.innerHTML = `<span class="status-dot" style="background:var(--orange);box-shadow:0 0 0 4px var(--orange-soft)"></span>本地缓存`;
     if (!quiet) showToast(message);
   } finally {
-    if (button) {
+    if (button && requestId === refreshSequence) {
       button.disabled = false;
       button.classList.remove("spinning");
     }
-    els.lastUpdated.textContent = completedLabel;
+    if (requestId === refreshSequence) {
+      els.lastUpdated.textContent = dataSettingsMatch(requestSettings) ? completedLabel : "设置已更改，请刷新";
+    }
   }
 }
 

@@ -35,7 +35,9 @@ jobs:
       - name: Restore accumulated feed history
         uses: actions/cache@v4
         with:
-          path: paper-history.json
+          path: |
+            paper-history.json
+            paper-source-cache.json
           key: paperlane-history-${{ github.run_id }}
           restore-keys: |
             paperlane-history-

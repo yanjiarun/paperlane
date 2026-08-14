@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 paper-cache.json
 paper-history.json
+paper-source-cache.json
 paperlane-*-test.png
 _site/
 .DS_Store
