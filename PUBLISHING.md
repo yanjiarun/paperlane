@@ -90,12 +90,12 @@ GitHub Pages 上的刷新按钮用于检查最近一次 Actions 生成的数据�
 4. GitHub Actions 会自动重新部署。
 5. 已安装的 Paperlane 会提示“新版本可用”。
 
-论文数据不需要人工提交。定时任务每 6 小时自动更新，生成数据按期刊拆分，设备只下载当前勾选的来源。
+论文数据不需要人工提交。定时任务每 6 小时自动更新，生成数据按来源拆分，设备只下载当前勾选的来源。
 
-发布正式版本时，将 version.json 中的版本号改为新版本，例如 0.5.1，提交并推送，然后创建对应标签：
+发布正式版本时，将 version.json 中的版本号改为新版本，例如 0.6.0，提交并推送，然后创建对应标签：
 
-    git tag v0.5.1
-    git push origin v0.5.1
+    git tag v0.6.0
+    git push origin v0.6.0
 
 **Create Paperlane Release** 会自动生成一个可下载的 Windows 压缩包，并创建 GitHub Release 和更新说明。
 

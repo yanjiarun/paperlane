@@ -73,6 +73,10 @@ button:disabled, input:disabled { cursor: not-allowed; opacity: 0.52; }
 .group-nav-item { padding: 0; overflow: hidden; }
 .group-select { min-width: 0; flex: 1; display: flex; align-items: center; gap: 10px; border: 0; background: transparent; color: inherit; padding: 10px; text-align: left; font-size: 13px; }
 .group-select:hover { color: var(--ink); }
+.group-select > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-actions { display: flex; align-items: center; gap: 1px; padding-right: 4px; }
+.group-action { width: 26px; height: 26px; border: 0; border-radius: 5px; background: transparent; color: var(--faint); font-size: 15px; line-height: 1; }
+.group-action:hover { background: var(--teal-soft); color: var(--teal); }
 .group-delete { width: 30px; height: 30px; margin-right: 5px; border: 0; border-radius: 5px; background: transparent; color: var(--faint); font-size: 17px; line-height: 1; }
 .group-delete:hover { background: var(--orange-soft); color: var(--orange); }
 .nav-item { width: 100%; border: 0; border-radius: 6px; background: transparent; color: var(--muted); display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px; font-size: 13px; }
@@ -139,6 +143,7 @@ button:disabled, input:disabled { cursor: not-allowed; opacity: 0.52; }
 .source-chip.nature { background: var(--orange-soft); color: var(--orange); }
 .source-chip.science { background: #e9eefc; color: #3551a4; }
 .source-chip.ieee { background: #f0eafd; color: #6d3fc0; }
+.source-chip.conference { background: #fce7f3; color: #9d174d; }
 .meta-separator { color: #c2cccf; }
 .paper-actions-top { display: flex; gap: 4px; }
 .star-button, .more-button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 5px; background: transparent; color: #a7b2b6; font-size: 17px; }
@@ -259,6 +264,7 @@ button:disabled, input:disabled { cursor: not-allowed; opacity: 0.52; }
   .group-nav { display: flex; overflow-x: auto; gap: 4px; padding-bottom: 10px; }
   .group-nav .nav-item { width: auto; min-width: 150px; border: 1px solid var(--line); padding: 0; }
   .group-nav .group-select { padding: 7px 8px; }
+  .group-nav .group-actions { padding-right: 2px; }
   .group-nav .nav-count { display: none; }
   .sidebar-footer { display: none; }
   .mobile-toolbar { display: flex; }

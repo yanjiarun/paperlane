@@ -3,6 +3,12 @@ const PAGE_SIZE = 60;
 const sourceCatalog = [
   { id: "all", label: "全部论文", icon: "ALL", color: "#102a43", group: "all" },
   { id: "arxiv", label: "arXiv", fullName: "arXiv · AI / ML / CV", icon: "aX", color: "#c2410c", group: "arxiv" },
+  { id: "conf-icml", label: "ICML", fullName: "International Conference on Machine Learning · CCF A", icon: "ICML", color: "#be123c", group: "conference", kind: "conference" },
+  { id: "conf-iclr", label: "ICLR", fullName: "International Conference on Learning Representations · CCF A", icon: "ICLR", color: "#0369a1", group: "conference", kind: "conference" },
+  { id: "conf-neurips", label: "NeurIPS", fullName: "Conference on Neural Information Processing Systems · CCF A", icon: "N", color: "#7c3aed", group: "conference", kind: "conference" },
+  { id: "conf-cvpr", label: "CVPR", fullName: "IEEE/CVF Conference on Computer Vision and Pattern Recognition · CCF A", icon: "CV", color: "#b45309", group: "conference", kind: "conference" },
+  { id: "conf-icra", label: "ICRA", fullName: "IEEE International Conference on Robotics and Automation", icon: "ICRA", color: "#047857", group: "conference", kind: "conference" },
+  { id: "conf-iros", label: "IROS", fullName: "IEEE/RSJ International Conference on Intelligent Robots and Systems", icon: "IROS", color: "#4338ca", group: "conference", kind: "conference" },
   { id: "ieee-tac", label: "TAC", fullName: "IEEE Transactions on Automatic Control", icon: "TAC", color: "#7c3aed", group: "control" },
   { id: "ieee-tro", label: "T-RO", fullName: "IEEE Transactions on Robotics", icon: "TRO", color: "#7c3aed", group: "control" },
   { id: "ieee-tcst", label: "TCST", fullName: "IEEE Transactions on Control Systems Technology", icon: "TCST", color: "#7c3aed", group: "control" },
@@ -46,6 +52,7 @@ const sourceCatalog = [
 const DEFAULT_ENABLED_SOURCES = [
   "arxiv", "ieee-tac", "ieee-tro", "ieee-taes", "ieee-tpami", "ieee-tnnls", "ieee-tip",
   "nature", "nature-machine-intelligence", "nature-communications", "science", "science-robotics",
+  "conf-icml", "conf-iclr", "conf-neurips", "conf-cvpr", "conf-icra", "conf-iros",
 ];
 
 const seedPapers = [
@@ -270,6 +277,10 @@ function isIeeePaper(paper) {
   return paper.source === "ieee" || paperSourceId(paper).startsWith("ieee-");
 }
 
+function isConferencePaper(paper) {
+  return paper.source === "conference" || sourceCatalog.some((source) => source.id === paperSourceId(paper) && source.kind === "conference");
+}
+
 function usesStaticData() {
   const override = new URLSearchParams(window.location.search).get("static");
   if (override === "1") return true;
@@ -307,7 +318,7 @@ const state = {
   renderLimit: PAGE_SIZE,
   dataMode: usesStaticData() ? "static" : "local",
   dataUpdatedAt: "",
-  appVersion: "0.5.1",
+  appVersion: "0.6.0",
 };
 
 const store = new window.PaperlaneStore();
@@ -485,7 +496,7 @@ function enabledPapers() {
   return state.papers.filter((paper) => {
     if (!state.enabledSources.includes(paperSourceId(paper))) return false;
     if (!matchesStaticIeeeScope(paper)) return false;
-    return isIeeePaper(paper) || paper.date >= cutoff;
+    return isIeeePaper(paper) || isConferencePaper(paper) || paper.date >= cutoff;
   });
 }
 
@@ -527,7 +538,11 @@ function renderSources() {
           <span>${escapeHtml(group.name)}</span>
           <span class="nav-count">${count}</span>
         </button>
-        <button class="group-delete" data-group-delete="${escapeHtml(group.id)}" title="删除分组" aria-label="删除分组">×</button>
+        <div class="group-actions">
+          <button class="group-action" data-group-export="${escapeHtml(group.id)}" data-export-mode="clipboard" title="复制分组论文标题" aria-label="复制分组论文标题">⧉</button>
+          <button class="group-action" data-group-export="${escapeHtml(group.id)}" data-export-mode="txt" title="导出分组论文标题为 TXT" aria-label="导出分组论文标题为 TXT">↓</button>
+          <button class="group-delete" data-group-delete="${escapeHtml(group.id)}" title="删除分组" aria-label="删除分组">×</button>
+        </div>
       </div>
     `;
   }).join("");
@@ -547,7 +562,7 @@ function renderSourcePicker() {
       <span class="source-option-copy"><strong>${escapeHtml(source.label)}</strong><small>${escapeHtml(source.fullName)}</small></span>
     </label>
   `).join("");
-  els.sourceSelectionSummary.textContent = `已选择 ${sourcePickerSelection.size} 本`;
+  els.sourceSelectionSummary.textContent = `已选择 ${sourcePickerSelection.size} 个来源`;
 }
 
 function openSourcesModal() {
@@ -624,10 +639,16 @@ function renderPapers() {
   updateFeedTitle();
 }
 
+function updateFeedMetrics() {
+  // Keep the count next to the update timestamp derived from the same view
+  // after every state change, including async refresh and cloud sync.
+  if (els.visibleCount) els.visibleCount.textContent = String(currentPapers().length);
+}
+
 function renderPaper(paper) {
   const isRead = Boolean(state.read[paper.id]);
   const isImportant = Boolean(state.important[paper.id]);
-  const sourceClass = paper.source === "nature" ? "nature" : paper.source === "science" ? "science" : paper.source === "ieee" ? "ieee" : "";
+  const sourceClass = paper.source === "nature" ? "nature" : paper.source === "science" ? "science" : paper.source === "ieee" ? "ieee" : paper.source === "conference" ? "conference" : "";
   const paperTiming = paper.issueLabel
     ? `${paper.issueLabel}${paper.issueType === "early-access" ? ` · ${paper.date.slice(0, 4)}` : ""}`
     : `${relativeDate(paper.date)} · ${formatDate(paper.date)}`;
@@ -688,9 +709,11 @@ function updateFeedTitle() {
   if (activeSource) {
     els.feedTitle.textContent = activeSource.label;
     if (activeSource.id === "all") {
-      els.sourceStripText.textContent = `${state.enabledSources.length} 本已选期刊 · 其他来源${rangeLabel()} · IEEE ${ieeeScopeLabel()}`;
+      els.sourceStripText.textContent = `${state.enabledSources.length} 个已选来源 · 其他来源${rangeLabel()} · IEEE ${ieeeScopeLabel()}`;
     } else if (activeSource.id.startsWith("ieee-")) {
       els.sourceStripText.textContent = `${activeSource.fullName || activeSource.label} · ${ieeeScopeLabel()}`;
+    } else if (activeSource.kind === "conference") {
+      els.sourceStripText.textContent = `${activeSource.fullName || activeSource.label} · 最近两届题录`;
     } else {
       els.sourceStripText.textContent = `${activeSource.fullName || activeSource.label} · ${rangeLabel()}`;
     }
@@ -713,6 +736,7 @@ function render() {
   renderCounts();
   renderPapers();
   updateFilterButtons();
+  updateFeedMetrics();
 }
 
 async function handlePaperAction(event) {
@@ -769,6 +793,55 @@ async function sharePaper(paper) {
     showToast("原文链接已复制");
   } catch (error) {
     if (error?.name !== "AbortError") showToast("链接复制失败，请直接打开原文");
+  }
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("剪贴板不可用");
+}
+
+async function exportGroupTitles(groupId, mode = "clipboard") {
+  const group = state.groups.find((item) => item.id === groupId);
+  if (!group) return;
+  const paperIds = Object.keys(state.groupItems[groupId] || {}).filter((paperId) => state.groupItems[groupId][paperId]);
+  const papers = paperIds
+    .map((paperId) => state.papers.find((paper) => paper.id === paperId))
+    .filter(Boolean)
+    .sort(comparePapers);
+  if (!papers.length) {
+    showToast("该分组还没有论文");
+    return;
+  }
+  const titles = papers.map((paper) => paper.title.trim()).filter(Boolean).join("\n");
+  if (mode === "txt") {
+    const blob = new Blob([titles + "\n"], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `paperlane-${group.name.replace(/[\\/:*?"<>|]/g, "_")}-titles.txt`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast(`已导出 ${papers.length} 篇论文标题`);
+    return;
+  }
+  try {
+    await copyText(titles);
+    showToast(`已复制 ${papers.length} 篇论文标题`);
+  } catch {
+    showToast("剪贴板不可用，请改用 TXT 导出");
   }
 }
 
@@ -915,7 +988,7 @@ async function fetchStaticPapers(force, requestedSources) {
     error: result.status.error,
   }));
   const coverageDates = [...unique.values()]
-    .filter((paper) => !isIeeePaper(paper) && paper.date && paper.date !== "1970-01-01")
+    .filter((paper) => !isIeeePaper(paper) && !isConferencePaper(paper) && paper.date && paper.date !== "1970-01-01")
     .map((paper) => paper.date);
   return {
     papers: [...unique.values()],
@@ -1007,7 +1080,7 @@ async function refreshPapers(force = true, quiet = false) {
     const status = payload.static
       ? "GitHub 定时数据"
       : partialCache ? "实时数据（部分沿用缓存）" : payload.cached ? (payload.stale ? "离线缓存" : "本地缓存") : "实时数据";
-    const hasDatedSource = requestSettings.enabledSources.some((sourceId) => !sourceId.startsWith("ieee-"));
+    const hasDatedSource = requestSettings.enabledSources.some((sourceId) => !sourceId.startsWith("ieee-") && !sourceId.startsWith("conf-"));
     const coverage = hasDatedSource
       ? (payload.coverageFrom ? `其他来源最早 ${payload.coverageFrom}` : "其他来源暂无论文")
       : ieeeScopeLabel();
@@ -1037,6 +1110,7 @@ async function refreshPapers(force = true, quiet = false) {
       button.classList.remove("spinning");
     }
     if (requestId === refreshSequence) {
+      updateFeedMetrics();
       els.lastUpdated.textContent = dataSettingsMatch(requestSettings) ? completedLabel : "设置已更改，请刷新";
     }
   }
@@ -1354,6 +1428,13 @@ async function installApp() {
 }
 
 document.addEventListener("click", async (event) => {
+  const groupExportButton = event.target.closest("[data-group-export]");
+  if (groupExportButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    await exportGroupTitles(groupExportButton.dataset.groupExport, groupExportButton.dataset.exportMode);
+    return;
+  }
   const deleteGroupButton = event.target.closest("[data-group-delete]");
   if (deleteGroupButton) {
     event.preventDefault();
@@ -1404,7 +1485,7 @@ els.sourcePicker.addEventListener("change", (event) => {
   if (!checkbox) return;
   if (checkbox.checked) sourcePickerSelection.add(checkbox.dataset.sourcePicker);
   else sourcePickerSelection.delete(checkbox.dataset.sourcePicker);
-  els.sourceSelectionSummary.textContent = `已选择 ${sourcePickerSelection.size} 本`;
+  els.sourceSelectionSummary.textContent = `已选择 ${sourcePickerSelection.size} 个来源`;
 });
 document.querySelector("#selectAllSourcesButton").addEventListener("click", () => {
   sourceCatalog.slice(1).forEach((source) => sourcePickerSelection.add(source.id));

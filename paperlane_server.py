@@ -39,7 +39,7 @@ IEEE_MAX_RECORDS_PER_COLLECTION = 1000
 ARXIV_MAX_RESULTS = 500
 STATIC_RANGE_DAYS = 365
 STATIC_IEEE_SCOPE = "ea+5"
-USER_AGENT = "Paperlane/0.3 (personal academic feed reader)"
+USER_AGENT = "Paperlane/0.6 (personal academic feed reader)"
 IEEE_BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
 REQUEST_TIMEOUT = 30
 REQUEST_ATTEMPTS = 3
@@ -88,9 +88,24 @@ FEEDS = [
     {"id": "science-robotics", "label": "SR", "fullName": "Science Robotics", "journal": "Science Robotics", "group": "nature-science", "publisher": "science", "url": "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=scirobotics", "limit": 12},
 ]
 
+# DBLP exposes a stable, key-free search endpoint for recent proceedings.  These
+# sources cover the machine-learning, vision, and robotics conferences most
+# useful for this reader; the endpoint returns bibliographic metadata rather
+# than full text, so abstracts use the same source note as RSS records without
+# an abstract.
+CONFERENCE_FEEDS = [
+    {"id": "conf-icml", "label": "ICML", "fullName": "International Conference on Machine Learning · CCF A", "conference": "ICML", "query": "venue:ICML", "group": "conference", "publisher": "dblp", "limit": 300},
+    {"id": "conf-iclr", "label": "ICLR", "fullName": "International Conference on Learning Representations · CCF A", "conference": "ICLR", "query": "venue:ICLR", "group": "conference", "publisher": "dblp", "limit": 300},
+    {"id": "conf-neurips", "label": "NeurIPS", "fullName": "Conference on Neural Information Processing Systems · CCF A", "conference": "NeurIPS", "query": "venue:NeurIPS", "group": "conference", "publisher": "dblp", "limit": 300},
+    {"id": "conf-cvpr", "label": "CVPR", "fullName": "IEEE/CVF Conference on Computer Vision and Pattern Recognition · CCF A", "conference": "CVPR", "query": "venue:CVPR", "group": "conference", "publisher": "dblp", "limit": 300},
+    {"id": "conf-icra", "label": "ICRA", "fullName": "IEEE International Conference on Robotics and Automation", "conference": "ICRA", "query": "venue:ICRA", "group": "conference", "publisher": "dblp", "limit": 300},
+    {"id": "conf-iros", "label": "IROS", "fullName": "IEEE/RSJ International Conference on Intelligent Robots and Systems", "conference": "IROS", "query": "venue:IROS", "group": "conference", "publisher": "dblp", "limit": 300},
+]
+
 ARXIV_SOURCE = {"id": "arxiv", "label": "arXiv", "fullName": "arXiv · AI / ML / CV", "group": "arxiv", "publisher": "arxiv"}
-ALL_SOURCE_IDS = [ARXIV_SOURCE["id"]] + [feed["id"] for feed in FEEDS]
+ALL_SOURCE_IDS = [ARXIV_SOURCE["id"]] + [feed["id"] for feed in FEEDS] + [feed["id"] for feed in CONFERENCE_FEEDS]
 IEEE_SOURCE_IDS = {feed["id"] for feed in FEEDS if feed["publisher"] == "ieee"}
+CONFERENCE_SOURCE_IDS = {feed["id"] for feed in CONFERENCE_FEEDS}
 
 
 class TextExtractor(HTMLParser):
@@ -383,6 +398,68 @@ def fetch_feed(config):
     return papers
 
 
+def fetch_dblp(config, range_days=DEFAULT_RANGE_DAYS):
+    """Fetch recent proceedings metadata from DBLP's public search API."""
+    params = urllib.parse.urlencode({
+        "q": config["query"],
+        "h": config.get("limit", 300),
+        "format": "json",
+    })
+    payload = json.loads(request_bytes("https://dblp.org/search/publ/api?" + params).decode("utf-8"))
+    hits = payload.get("result", {}).get("hits", {}).get("hit", []) or []
+    if isinstance(hits, dict):
+        hits = [hits]
+    current_year = utc_now().year
+    papers = []
+    for hit in hits:
+        info = hit.get("info") or {}
+        try:
+            year = int(info.get("year"))
+        except (TypeError, ValueError):
+            continue
+        # Keep the current and preceding proceedings year.  Conference papers
+        # are annual, so a date-range filter would hide a useful whole volume.
+        if year < current_year - 1 or year > current_year:
+            continue
+        title = clean_text(info.get("title")) or "未命名论文"
+        author_block = info.get("authors") or {}
+        authors = author_block.get("author", []) if isinstance(author_block, dict) else []
+        if isinstance(authors, dict):
+            authors = [authors]
+        author_names = [author.get("text", "") if isinstance(author, dict) else str(author) for author in authors]
+        ee = info.get("ee")
+        if isinstance(ee, list):
+            ee = next((value for value in ee if str(value).startswith("http")), "")
+        url = str(ee or info.get("url") or "")
+        doi = normalize_doi(info.get("doi", "")) if isinstance(info.get("doi", ""), str) else ""
+        if not url and doi:
+            url = "https://doi.org/{}".format(doi)
+        label = config["label"]
+        category = "{} {}".format(label, year)
+        papers.append({
+            "id": stable_paper_id("conference", doi, url, title),
+            "source": "conference",
+            "sourceId": config["id"],
+            "sourceLabel": label,
+            "journal": config["fullName"],
+            "date": "{}-07-01".format(year),
+            "sortDate": "{}-07-01".format(year),
+            "sourceOrder": len(papers),
+            "category": category,
+            "title": title,
+            "authors": format_authors(author_names),
+            "abstract": NO_ABSTRACT,
+            "tags": [label, "CCF A" if "CCF A" in config["fullName"] else "Robotics", "DBLP"],
+            "url": url,
+            "pdfUrl": "",
+            "doi": doi,
+            "conferenceYear": year,
+        })
+    if not papers:
+        raise ValueError("DBLP 未返回 {} 最近两年的论文".format(config["label"]))
+    return {"papers": papers, "limited": len(hits) >= config.get("limit", 300), "note": "DBLP 会议题录", "mode": "dblp"}
+
+
 def ieee_record_to_paper(record, config, issue, early_access, source_order):
     publication_number = ieee_publication_number(config)
     title = clean_text(record.get("articleTitle")) or "未命名论文"
@@ -605,6 +682,9 @@ def collect_papers(selected_sources=None, range_days=DEFAULT_RANGE_DAYS, ieee_sc
         if config["id"] in selected:
             callback = partial(fetch_ieee, config, ieee_scope) if config["publisher"] == "ieee" else partial(fetch_feed, config)
             jobs.append((config["id"], config["label"], callback))
+    for config in CONFERENCE_FEEDS:
+        if config["id"] in selected:
+            jobs.append((config["id"], config["label"], partial(fetch_dblp, config, range_days)))
 
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
@@ -630,7 +710,7 @@ def collect_papers(selected_sources=None, range_days=DEFAULT_RANGE_DAYS, ieee_sc
         "sources": statuses,
         "errors": [status for status in statuses if status["error"]],
         "fetchedAt": utc_now().isoformat(),
-        "requestedSources": sorted(selected),
+        "requestedSources": [source_id for source_id in ALL_SOURCE_IDS if source_id in selected],
         "ieeeScope": ieee_scope,
         "cached": False,
         "stale": False,
@@ -773,7 +853,7 @@ def build_range_payload(
         paper for paper in history
         if paper.get("sourceId") in selected
         and paper.get("sourceId") not in IEEE_SOURCE_IDS
-        and paper.get("date", "1970-01-01") >= cutoff
+        and (paper.get("sourceId") in CONFERENCE_SOURCE_IDS or paper.get("date", "1970-01-01") >= cutoff)
     ]
     source_cache = source_cache if source_cache is not None else load_source_cache()
     status_by_id = {status["id"]: status for status in fresh["sources"]}
@@ -797,7 +877,7 @@ def build_range_payload(
         if not status["error"]:
             if source_id == "arxiv":
                 limited = len(current_dates) >= ARXIV_MAX_RESULTS
-            elif source_id not in IEEE_SOURCE_IDS:
+            elif source_id not in IEEE_SOURCE_IDS and source_id not in CONFERENCE_SOURCE_IDS:
                 limited = not current_dates or min(current_dates) > cutoff
         fallback_used = source_id in stale_sources
         note = status.get("note", "")
@@ -817,7 +897,9 @@ def build_range_payload(
         )
     coverage_dates = [
         paper["date"] for paper in papers
-        if paper.get("sourceId") not in IEEE_SOURCE_IDS and paper.get("date") != "1970-01-01"
+        if paper.get("sourceId") not in IEEE_SOURCE_IDS
+        and paper.get("sourceId") not in CONFERENCE_SOURCE_IDS
+        and paper.get("date") != "1970-01-01"
     ]
     return {
         "papers": papers,
@@ -890,6 +972,17 @@ def source_catalog():
             "publisher": feed["publisher"],
         }
         for feed in FEEDS
+    ] + [
+        {
+            "id": feed["id"],
+            "label": feed["label"],
+            "fullName": feed["fullName"],
+            "conference": feed["conference"],
+            "group": feed["group"],
+            "publisher": feed["publisher"],
+            "kind": "conference",
+        }
+        for feed in CONFERENCE_FEEDS
     ]
 
 
@@ -994,7 +1087,8 @@ def build_static_site(output_directory, refresh=True, range_days=STATIC_RANGE_DA
         else:
             papers = [
                 paper for paper in history
-                if paper.get("sourceId") == source_id and paper.get("date", "1970-01-01") >= cutoff
+                if paper.get("sourceId") == source_id
+                and (source_id in CONFERENCE_SOURCE_IDS or paper.get("date", "1970-01-01") >= cutoff)
             ]
         papers = deduplicate(papers)
         source_payload = {
@@ -1055,7 +1149,7 @@ def build_static_site(output_directory, refresh=True, range_days=STATIC_RANGE_DA
     )
     (output / "supabase-config.js").write_text(config, encoding="utf-8")
 
-    source_version = {"version": "0.5.1"}
+    source_version = {"version": "0.6.0"}
     try:
         with (ROOT / "version.json").open("r", encoding="utf-8") as handle:
             source_version.update(json.load(handle))
