@@ -81,6 +81,10 @@
                 <h2 id="feedTitle">全部论文</h2>
               </div>
               <div class="feed-metrics">
+                <div class="translation-control" id="translationControl" role="group" aria-label="论文语言" title="切换论文标题和摘要语言">
+                  <button type="button" class="translation-button active" data-translation-mode="original" aria-pressed="true">原文</button>
+                  <button type="button" class="translation-button" data-translation-mode="zh" aria-pressed="false">中文</button>
+                </div>
                 <span id="lastUpdated">刚刚更新</span>
                 <span class="metric-divider"></span>
                 <span><strong id="visibleCount">0</strong> 篇</span>
@@ -278,7 +282,7 @@
 
         <div class="account-divider"></div>
         <section class="device-section">
-          <div class="device-heading"><strong>当前设备 <span class="app-version" id="appVersion">v0.7.0</span></strong><span id="storageUsage">正在计算占用</span></div>
+          <div class="device-heading"><strong>当前设备 <span class="app-version" id="appVersion">v0.9.0</span></strong><span id="storageUsage">正在计算占用</span></div>
           <div class="device-actions">
             <button class="secondary-button" id="accountInstallButton" type="button">安装 Paperlane</button>
             <button class="secondary-button" id="exportButton" type="button">导出数据</button>

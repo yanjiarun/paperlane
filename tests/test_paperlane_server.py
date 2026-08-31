@@ -201,6 +201,121 @@ class PaperlaneServerTests(unittest.TestCase):
         self.assertEqual(oral["authors"], "Alice")
         self.assertTrue(oral["pdfUrl"].endswith("oral-1"))
 
+    def test_openreview_uses_decision_map_and_queries_every_accepted_venue(self):
+        config = dict(server.CONFERENCE_FEEDS[0], limit=2)
+        years = (server.utc_now().year, server.utc_now().year - 1)
+        group_calls = []
+        note_calls = []
+
+        def request(url):
+            query = parse_qs(urlparse(url).query)
+            if urlparse(url).path.endswith("/groups"):
+                group_id = query["prefix"][0]
+                year = int(group_id.split("/")[1])
+                group_calls.append(group_id)
+                return json.dumps({
+                    "groups": [{
+                        "id": group_id,
+                        "content": {
+                            "submission_id": {"value": group_id + "/-/Submission"},
+                            "decision_heading_map": {"value": {
+                                "ICML {} oral".format(year): "Accept (oral)",
+                                "ICML {} spotlightposter".format(year): "Accept (spotlight poster)",
+                                "Submitted to ICML {}".format(year): "Reject",
+                            }},
+                        },
+                    }]
+                }).encode("utf-8")
+            venue = query.get("content.venue", [""])[0]
+            offset = int(query["offset"][0])
+            note_calls.append((venue, offset))
+            year = int(venue.split()[1])
+            if offset == 0:
+                label = "oral" if "oral" in venue else "spotlight"
+                return json.dumps({
+                    "notes": [{
+                        "id": "{}-{}".format(label, year),
+                        "forum": "{}-{}".format(label, year),
+                        "content": {
+                            "title": {"value": "{} paper".format(label)},
+                            "abstract": {"value": "A sufficiently long abstract for {} paper.".format(label)},
+                            "authors": {"value": [{"value": "Author"}]},
+                        },
+                    }],
+                    "count": 1,
+                }).encode("utf-8")
+            return json.dumps({"notes": [], "count": 1}).encode("utf-8")
+
+        with mock.patch.object(server, "request_bytes", side_effect=request):
+            result = server.fetch_openreview(config)
+
+        self.assertEqual(len(group_calls), 2)
+        self.assertEqual(len(note_calls), 4)
+        self.assertEqual({item["decisionLabel"] for item in result["papers"]}, {"Oral", "Spotlight"})
+        self.assertEqual(len(result["papers"]), 4)
+
+    def test_openreview_continues_after_short_pages_when_total_is_larger(self):
+        pages = {
+            0: {"notes": [{"id": str(index)} for index in range(100)], "total": 205},
+            100: {"notes": [{"id": str(index)} for index in range(100, 200)], "total": 205},
+            200: {"notes": [{"id": str(index)} for index in range(200, 205)], "total": 205},
+        }
+
+        def request(url):
+            offset = int(parse_qs(urlparse(url).query)["offset"][0])
+            return json.dumps(pages[offset]).encode("utf-8")
+
+        with mock.patch.object(server, "request_bytes", side_effect=request):
+            notes, limited = server.fetch_openreview_notes("Venue/-/Submission", page_size=1000)
+
+        self.assertFalse(limited)
+        self.assertEqual(len(notes), 205)
+
+    def test_openreview_handles_100_note_server_cap_without_total(self):
+        pages = {
+            0: {"notes": [{"id": str(index)} for index in range(100)]},
+            100: {"notes": [{"id": str(index)} for index in range(100, 200)]},
+            200: {"notes": [{"id": "200"}]},
+        }
+
+        def request(url):
+            offset = int(parse_qs(urlparse(url).query)["offset"][0])
+            return json.dumps(pages.get(offset, {"notes": []})).encode("utf-8")
+
+        with mock.patch.object(server, "request_bytes", side_effect=request):
+            notes, limited = server.fetch_openreview_notes("Venue/-/Submission", page_size=1000)
+
+        self.assertFalse(limited)
+        self.assertEqual(len(notes), 201)
+
+    def test_openreview_tries_api2_then_api(self):
+        def request(url):
+            if "api2.openreview.net" in url:
+                raise OSError("api2 unavailable")
+            return b'{"ok": true}'
+
+        with mock.patch.object(server, "request_bytes", side_effect=request):
+            payload = server.request_openreview_json("/groups", {"prefix": "Venue"})
+
+        self.assertTrue(payload["ok"])
+
+    def test_ieee_conference_crossref_filters_exact_doi_and_container(self):
+        config = server.CONFERENCE_FEEDS[-1]
+        valid = {
+            "DOI": "10.1109/iros60139.2025.11247074",
+            "title": ["A Robot Paper"],
+            "container-title": ["2025 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)"],
+            "author": [{"given": "A", "family": "Researcher"}],
+            "published": {"date-parts": [[2025, 10, 1]]},
+        }
+        wrong_container = dict(valid, DOI="10.1109/iros60139.2025.11247075", **{"container-title": ["IEEE International Conference on Robotics and Automation (ICRA)"]})
+        wrong_doi = dict(valid, DOI="10.1109/icra55743.2025.11127432")
+        with mock.patch.object(server, "crossref_items", return_value=[valid, wrong_container, wrong_doi]):
+            result = server.fetch_ieee_conference(config)
+
+        self.assertEqual(result["mode"], "crossref-ieee")
+        self.assertEqual([item["doi"] for item in result["papers"]], [valid["DOI"]])
+
     def test_official_conference_parser_filters_navigation_links(self):
         raw = b"""
         <script type="application/ld+json">

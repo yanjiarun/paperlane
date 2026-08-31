@@ -47,6 +47,17 @@ publishable/anon key 本来就是公开前端密钥，安全边界由数据库 R
 
 若网页账号窗口显示“线上未注入 Supabase 配置”，可直接打开线上 `supabase-config.js` 检查：url 和 anonKey 为空就表示变量尚未进入最近一次 Pages 构建。仅在 GitHub 设置中新增变量不会自动部署，必须重新运行工作流。
 
+### 启用 DeepL 中文翻译
+
+中文开关位于“数据更新于”前面，只翻译当前页的论文标题和摘要。翻译结果按论文 ID 和原文内容指纹保存在本机 IndexedDB 的独立缓存中，刷新页面或翻页不会重复请求；切换回原文不会修改论文数据。
+
+翻译代理使用仓库中的 Supabase Edge Function：
+
+    supabase secrets set DEEPL_AUTH_KEY=你的DeepL密钥
+    supabase functions deploy translate
+
+函数默认使用 DeepL Free API；如果是 Pro API，可设置 `DEEPL_API_URL=https://api.deepl.com/v2/translate` 后重新部署。`supabase/config.toml` 已将该函数设为由函数内部校验 user/publishable 凭据，访客请求使用 `apikey`，登录请求额外携带用户 JWT。DeepL 密钥只保存在 Supabase 服务端环境变量中，不会写入 GitHub Pages 或浏览器。没有配置 Supabase 或 Edge Function 时，开关仍可切换，但会保留英文原文并提示翻译服务未配置。
+
 ## 同步规则
 
 - 游客数据和每个账号使用独立的本地空间。
@@ -66,8 +77,10 @@ publishable/anon key 本来就是公开前端密钥，安全边界由数据库 R
 
 - arXiv：官方 API，支持最近 1 至 365 天，单次最多 500 篇。
 - Nature / Science：官方 RSS 当前公开的全部条目。
-- 顶会：ICML、ICLR、NeurIPS、CVPR 优先从 OpenReview 已接收论文接口加载，ICRA、IROS 等 IEEE 会议优先读取会议官网；主来源受限时自动回退 DBLP。会议数据保留最近两届，OpenReview 论文会标记 Oral、Spotlight、Poster 或 Accepted，标题、作者、摘要和原文链接随来源提供。
+- 顶会：ICML、ICLR、NeurIPS、CVPR 优先从 OpenReview 会议组的 accepted venue 全量加载，自动识别 Oral、Spotlight、Poster；ICRA、IROS 优先使用 IEEE Xplore API（配置 API key 时）或经过 DOI/会议名严格校验的 Crossref IEEE 元数据，主来源受限时最后回退 DBLP。会议数据保留最近两届。
 - IEEE：Xplore 官网页面接口，支持 Early Access、最新 1/2/3/5 期及组合；接口异常时回退官方 RSS。
+
+ICRA/IROS 若要优先使用 IEEE Xplore 官方 API，可在本机设置 `PAPERLANE_IEEE_API_KEY`（或 `IEEE_XPLORE_API_KEY`）；GitHub Actions 中将 API key 保存为 `IEEE_XPLORE_API_KEY` secret。未配置时自动使用 Crossref 的 IEEE DOI 元数据，不会把密钥写入静态网页。
 - 历史题录本地保留 730 天。论文原文始终通过出版社或 arXiv 原始链接打开，不缓存受版权保护的全文。
 
 ## GitHub 发布与更新

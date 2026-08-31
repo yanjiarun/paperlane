@@ -63,6 +63,7 @@ jobs:
           PAPERLANE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           PAPERLANE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
           PAPERLANE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          PAPERLANE_IEEE_API_KEY: ${{ secrets.IEEE_XPLORE_API_KEY }}
         run: python paperlane_server.py --build-static _site --days 365 --ieee-scope ea+5
 
       - name: Configure GitHub Pages

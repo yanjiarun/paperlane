@@ -37,11 +37,13 @@ IEEE_SCOPE_OPTIONS = {"ea", "1", "2", "3", "5", "ea+1", "ea+2", "ea+3", "ea+5"}
 IEEE_ROWS_PER_PAGE = 100
 IEEE_MAX_RECORDS_PER_COLLECTION = 1000
 OPENREVIEW_PAGE_SIZE = 1000
-OPENREVIEW_MAX_PAGES = 20
+OPENREVIEW_MAX_PAGES = 100
+CROSSREF_PAGE_SIZE = 100
+CROSSREF_MAX_PAGES = 50
 ARXIV_MAX_RESULTS = 500
 STATIC_RANGE_DAYS = 365
 STATIC_IEEE_SCOPE = "ea+5"
-USER_AGENT = "Paperlane/0.7 (personal academic feed reader)"
+USER_AGENT = "Paperlane/0.9 (personal academic feed reader)"
 IEEE_BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
 REQUEST_TIMEOUT = 30
 REQUEST_ATTEMPTS = 3
@@ -90,15 +92,15 @@ FEEDS = [
     {"id": "science-robotics", "label": "SR", "fullName": "Science Robotics", "journal": "Science Robotics", "group": "nature-science", "publisher": "science", "url": "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=scirobotics", "limit": 12},
 ]
 
-# Conference sources prefer the venue's own public service and retain DBLP as a
-# metadata fallback. OpenReview decisions are kept as oral/spotlight labels.
+# Conference sources prefer the venue's own public service and retain metadata
+# fallbacks only when the primary endpoint is unavailable.
 CONFERENCE_FEEDS = [
     {"id": "conf-icml", "label": "ICML", "fullName": "International Conference on Machine Learning · CCF A", "conference": "ICML", "query": "venue:ICML", "sourceType": "openreview", "invitation": "ICML.cc/{year}/Conference/-/Submission", "group": "conference", "publisher": "openreview", "limit": 1000},
     {"id": "conf-iclr", "label": "ICLR", "fullName": "International Conference on Learning Representations · CCF A", "conference": "ICLR", "query": "venue:ICLR", "sourceType": "openreview", "invitation": "ICLR.cc/{year}/Conference/-/Submission", "group": "conference", "publisher": "openreview", "limit": 1000},
     {"id": "conf-neurips", "label": "NeurIPS", "fullName": "Conference on Neural Information Processing Systems · CCF A", "conference": "NeurIPS", "query": "venue:NeurIPS", "sourceType": "openreview", "invitation": "NeurIPS.cc/{year}/Conference/-/Submission", "group": "conference", "publisher": "openreview", "limit": 1000},
     {"id": "conf-cvpr", "label": "CVPR", "fullName": "IEEE/CVF Conference on Computer Vision and Pattern Recognition · CCF A", "conference": "CVPR", "query": "venue:CVPR", "sourceType": "openreview", "invitation": "CVPR.cc/{year}/Conference/-/Submission", "group": "conference", "publisher": "openreview", "limit": 1000},
-    {"id": "conf-icra", "label": "ICRA", "fullName": "IEEE International Conference on Robotics and Automation", "conference": "ICRA", "query": "venue:ICRA", "sourceType": "official", "officialUrl": "https://{year}.ieee-icra.org/program/", "group": "conference", "publisher": "ieee-ras", "limit": 300},
-    {"id": "conf-iros", "label": "IROS", "fullName": "IEEE/RSJ International Conference on Intelligent Robots and Systems", "conference": "IROS", "query": "venue:IROS", "sourceType": "official", "officialUrl": "https://{year}.ieee-iros.org/", "group": "conference", "publisher": "ieee-ras", "limit": 300},
+    {"id": "conf-icra", "label": "ICRA", "fullName": "IEEE International Conference on Robotics and Automation", "conference": "ICRA", "query": "venue:ICRA", "sourceType": "ieee-conference", "officialUrl": "https://{year}.ieee-icra.org/program/", "crossrefQuery": "ICRA", "doiPattern": r"^10\.1109/icra\d+\.\d{4}\.", "containerPattern": r"international conference on robotics and automation|\(icra\)", "group": "conference", "publisher": "ieee-ras", "limit": 5000},
+    {"id": "conf-iros", "label": "IROS", "fullName": "IEEE/RSJ International Conference on Intelligent Robots and Systems", "conference": "IROS", "query": "venue:IROS", "sourceType": "ieee-conference", "officialUrl": "https://{year}.ieee-iros.org/", "crossrefQuery": "IROS", "doiPattern": r"^10\.1109/iros\d+\.\d{4}\.", "containerPattern": r"international conference on intelligent robots and systems|\(iros\)", "group": "conference", "publisher": "ieee-ras", "limit": 5000},
 ]
 
 ARXIV_SOURCE = {"id": "arxiv", "label": "arXiv", "fullName": "arXiv · AI / ML / CV", "group": "arxiv", "publisher": "arxiv"}
@@ -476,111 +478,419 @@ def openreview_scalar(value):
     return str(value or "").strip()
 
 
-def fetch_openreview_notes(invitation, page_size=OPENREVIEW_PAGE_SIZE, max_pages=OPENREVIEW_MAX_PAGES):
-    """Read all available note pages while tolerating API page-size limits."""
-    notes = []
-    seen_keys = set()
-    offset = 0
-    limited = False
-    for _ in range(max_pages):
-        params = urllib.parse.urlencode({"invitation": invitation, "limit": page_size, "offset": offset})
-        payload = json.loads(request_bytes("https://api.openreview.net/notes?" + params).decode("utf-8"))
-        page = payload.get("notes") or payload.get("results") or []
-        if not isinstance(page, list) or not page:
-            break
-        new_page = []
-        repeated = 0
-        for note in page:
-            if not isinstance(note, dict):
-                continue
-            key = str(note.get("id") or note.get("forum") or "")
-            if key and key in seen_keys:
-                repeated += 1
-                continue
-            if key:
-                seen_keys.add(key)
-            new_page.append(note)
-        notes.extend(new_page)
-        if repeated and not new_page:
-            break
-        offset += len(page)
+OPENREVIEW_API_BASES = ("https://api2.openreview.net", "https://api.openreview.net")
+
+
+def request_openreview_json(path, params, bases=OPENREVIEW_API_BASES):
+    query = urllib.parse.urlencode(params)
+    errors = []
+    for base in bases:
         try:
-            total = int(payload.get("count") or payload.get("total") or 0)
-        except (TypeError, ValueError):
-            total = 0
-        if len(page) < page_size or (total and offset >= total):
-            break
-    else:
-        limited = True
-    return notes, limited
+            raw = request_bytes("{}{}?{}".format(base, path, query))
+            payload = json.loads(raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("OpenReview 返回格式无效")
+            return payload
+        except Exception as error:
+            errors.append(error)
+    raise RuntimeError("OpenReview 接口不可用：{}".format(errors[-1] if errors else "未知错误"))
+
+
+def openreview_raw(content, key, default=None):
+    value = (content or {}).get(key, default)
+    while isinstance(value, dict) and "value" in value:
+        value = value.get("value", default)
+    return value
+
+
+def fetch_openreview_group(group_id):
+    payload = request_openreview_json("/groups", {"prefix": group_id})
+    groups = payload.get("groups") or []
+    exact = next((group for group in groups if group.get("id") == group_id), None)
+    if exact:
+        return exact
+    if groups:
+        return groups[0]
+    raise ValueError("OpenReview 未找到会议组 {}".format(group_id))
+
+
+def fetch_openreview_notes(
+    invitation,
+    page_size=OPENREVIEW_PAGE_SIZE,
+    max_pages=OPENREVIEW_MAX_PAGES,
+    filters=None,
+):
+    """Read all note pages, including APIs that cap each response at 100 notes."""
+    params_base = {"invitation": invitation, "limit": page_size}
+    params_base.update(filters or {})
+    errors = []
+    for base in OPENREVIEW_API_BASES:
+        notes = []
+        seen_keys = set()
+        offset = 0
+        limited = False
+        try:
+            for _ in range(max_pages):
+                params = dict(params_base, offset=offset)
+                payload = request_openreview_json("/notes", params, bases=(base,))
+                page = payload.get("notes") or payload.get("results") or []
+                if not isinstance(page, list) or not page:
+                    break
+                new_page = []
+                repeated = 0
+                for note in page:
+                    if not isinstance(note, dict):
+                        continue
+                    key = str(note.get("id") or note.get("forum") or "")
+                    if key and key in seen_keys:
+                        repeated += 1
+                        continue
+                    if key:
+                        seen_keys.add(key)
+                    new_page.append(note)
+                notes.extend(new_page)
+                if repeated and not new_page:
+                    break
+                offset += len(page)
+                try:
+                    total = int(payload.get("count") or payload.get("total") or 0)
+                except (TypeError, ValueError):
+                    total = 0
+                # Some OpenReview deployments return 100 notes even when limit=1000.
+                # Trust the server total before using the short-page heuristic.
+                if total:
+                    # A few older deployments expose the page size as `count`.
+                    # One extra empty request is harmless and avoids truncating
+                    # a collection at exactly 100 notes.
+                    if offset >= total and not (len(page) >= 100 and len(page) < page_size):
+                        break
+                elif len(page) < page_size and len(page) < 100:
+                    break
+            else:
+                limited = True
+            return notes, limited
+        except Exception as error:
+            errors.append(error)
+    raise RuntimeError("OpenReview notes 接口不可用：{}".format(errors[-1] if errors else "未知错误"))
+
+
+def openreview_decision_label(value):
+    decision = clean_text(value).lower()
+    if "oral" in decision:
+        return "Oral"
+    if "spotlight" in decision:
+        return "Spotlight"
+    if "poster" in decision:
+        return "Poster"
+    return "Accepted"
+
+
+def openreview_note_to_paper(note, config, year, decision_hint="", require_accept=True, source_order=0):
+    content = note.get("content") or {}
+    if not isinstance(content, dict):
+        return None
+    title = clean_text(openreview_value(content, "title"))
+    if not title:
+        return None
+    decisions = [
+        clean_text(openreview_value(content, key))
+        for key in ("venue", "decision", "acceptance")
+    ]
+    if decision_hint:
+        decisions.append(clean_text(decision_hint))
+    decision = next((value for value in decisions if value), "")
+    if require_accept and not any(re.search(r"(?:accept|oral|spotlight|poster)", value, flags=re.I) for value in decisions):
+        return None
+    label_source = next(
+        (value for value in decisions if re.search(r"(?:oral|spotlight|poster)", value, flags=re.I)),
+        decision,
+    )
+    decision_label = openreview_decision_label(label_source)
+    raw_authors = openreview_raw(content, "authors") or openreview_raw(content, "authorids") or []
+    if not isinstance(raw_authors, list):
+        raw_authors = [raw_authors]
+    author_names = [openreview_scalar(author) for author in raw_authors]
+    pdf = openreview_value(content, "pdf")
+    forum = note.get("forum") or note.get("id")
+    url = "https://openreview.net/forum?id={}".format(urllib.parse.quote(str(forum), safe="")) if forum else "https://openreview.net"
+    return {
+        "id": stable_paper_id("conference", str(forum or ""), url, title),
+        "source": "conference",
+        "sourceId": config["id"],
+        "sourceLabel": config["label"],
+        "journal": config["fullName"],
+        "date": "{}-07-01".format(year),
+        "sortDate": "{}-07-01".format(year),
+        "sourceOrder": source_order,
+        "category": "{} {}".format(config["label"], year),
+        "title": title,
+        "authors": format_authors(author_names),
+        "abstract": clean_text(openreview_value(content, "abstract")) or NO_ABSTRACT,
+        "tags": [config["label"], decision_label, "OpenReview"],
+        "url": url,
+        "pdfUrl": urllib.parse.urljoin("https://openreview.net", pdf) if pdf else "",
+        "doi": normalize_doi(openreview_value(content, "doi")),
+        "conferenceYear": year,
+        "decisionLabel": decision_label,
+    }
 
 
 def fetch_openreview(config, range_days=DEFAULT_RANGE_DAYS):
     papers = []
     limited = False
     current_year = utc_now().year
+    page_size = min(int(config.get("limit", OPENREVIEW_PAGE_SIZE)), OPENREVIEW_PAGE_SIZE)
     for year in (current_year, current_year - 1):
         invitation = config["invitation"].format(year=year)
-        notes, year_limited = fetch_openreview_notes(
-            invitation,
-            page_size=min(int(config.get("limit", OPENREVIEW_PAGE_SIZE)), OPENREVIEW_PAGE_SIZE),
-        )
-        limited = limited or year_limited
-        for note in notes:
-            content = note.get("content") or {}
-            if not isinstance(content, dict):
-                continue
-            title = clean_text(openreview_value(content, "title"))
-            if not title:
-                continue
-            decision = clean_text(
-                openreview_value(content, "venue")
-                or openreview_value(content, "decision")
-                or openreview_value(content, "acceptance")
-            )
-            decision_lower = decision.lower()
-            if not any(token in decision_lower for token in ("accept", "oral", "spotlight", "poster")):
-                continue
-            if "oral" in decision_lower:
-                decision_label = "Oral"
-            elif "spotlight" in decision_lower:
-                decision_label = "Spotlight"
-            elif "poster" in decision_lower:
-                decision_label = "Poster"
+        year_papers = []
+        try:
+            group = fetch_openreview_group(invitation.rsplit("/-/", 1)[0])
+            group_content = group.get("content") or {}
+            submission_invitation = openreview_value(group_content, "submission_id") or invitation
+            decision_map = openreview_raw(group_content, "decision_heading_map")
+            accepted = [
+                (venue, heading)
+                for venue, heading in (decision_map.items() if isinstance(decision_map, dict) else [])
+                if re.search(r"(?:accept|conditional\s+accept)", str(heading), flags=re.I)
+            ]
+            if accepted:
+                for venue, heading in accepted:
+                    notes, year_limited = fetch_openreview_notes(
+                        submission_invitation,
+                        page_size=page_size,
+                        filters={"content.venue": venue},
+                    )
+                    limited = limited or year_limited
+                    year_papers.extend(
+                        paper for paper in (
+                            openreview_note_to_paper(note, config, year, heading, require_accept=False, source_order=len(papers) + len(year_papers))
+                            for note in notes
+                        ) if paper
+                    )
             else:
-                decision_label = "Accepted"
-            raw_authors = content.get("authors") or content.get("authorids") or []
-            if isinstance(raw_authors, dict):
-                raw_authors = raw_authors.get("value", [])
-            if not isinstance(raw_authors, list):
-                raw_authors = [raw_authors]
-            author_names = [openreview_scalar(author) for author in raw_authors]
-            pdf = openreview_value(content, "pdf")
-            forum = note.get("forum") or note.get("id")
-            url = "https://openreview.net/forum?id={}".format(urllib.parse.quote(str(forum), safe="")) if forum else "https://openreview.net"
-            papers.append({
-                "id": stable_paper_id("conference", str(forum or ""), url, title),
-                "source": "conference",
-                "sourceId": config["id"],
-                "sourceLabel": config["label"],
-                "journal": config["fullName"],
-                "date": "{}-07-01".format(year),
-                "sortDate": "{}-07-01".format(year),
-                "sourceOrder": len(papers),
-                "category": "{} {}".format(config["label"], year),
-                "title": title,
-                "authors": format_authors(author_names),
-                "abstract": clean_text(openreview_value(content, "abstract")) or NO_ABSTRACT,
-                "tags": [config["label"], decision_label, "OpenReview"],
-                "url": url,
-                "pdfUrl": urllib.parse.urljoin("https://openreview.net", pdf) if pdf else "",
-                "doi": normalize_doi(openreview_value(content, "doi")),
-                "conferenceYear": year,
-                "decisionLabel": decision_label,
-            })
+                venue_id = openreview_value(group_content, "submission_venue_id")
+                if not venue_id:
+                    raise ValueError("OpenReview 会议组缺少录用 venue")
+                notes, year_limited = fetch_openreview_notes(
+                    submission_invitation,
+                    page_size=page_size,
+                    filters={"content.venueid": venue_id},
+                )
+                limited = limited or year_limited
+                year_papers.extend(
+                    paper for paper in (
+                        openreview_note_to_paper(note, config, year, "Accepted", require_accept=False, source_order=len(papers) + index)
+                        for index, note in enumerate(notes)
+                    ) if paper
+                )
+        except Exception:
+            # Keep compatibility with older OpenReview deployments that do not
+            # expose conference group metadata.
+            notes, year_limited = fetch_openreview_notes(invitation, page_size=page_size)
+            limited = limited or year_limited
+            year_papers.extend(
+                paper for paper in (
+                    openreview_note_to_paper(note, config, year, source_order=len(papers) + index)
+                    for index, note in enumerate(notes)
+                ) if paper
+            )
+        papers.extend(year_papers)
     if not papers:
         raise ValueError("OpenReview 未返回 {} 已接收论文".format(config["label"]))
-    return {"papers": deduplicate(papers), "limited": limited, "note": "OpenReview 已接收论文", "mode": "openreview"}
+    return {"papers": deduplicate(papers), "limited": limited, "note": "OpenReview accepted venue 全量论文", "mode": "openreview"}
+
+
+def crossref_year(record):
+    for key in ("published-print", "published-online", "published", "issued", "created"):
+        value = record.get(key) or {}
+        parts = value.get("date-parts") if isinstance(value, dict) else []
+        if parts and parts[0]:
+            try:
+                return int(parts[0][0])
+            except (TypeError, ValueError):
+                pass
+    return 0
+
+
+def crossref_author_names(record):
+    names = []
+    for author in record.get("author") or []:
+        if not isinstance(author, dict):
+            continue
+        name = author.get("name") or " ".join(
+            part for part in (author.get("given", ""), author.get("family", "")) if part
+        )
+        if name:
+            names.append(name)
+    return names
+
+
+def crossref_items(config, year):
+    params = {
+        "query.container-title": config["crossrefQuery"],
+        "filter": "from-pub-date:{}-01-01,until-pub-date:{}-12-31".format(year, year),
+        "rows": CROSSREF_PAGE_SIZE,
+        "offset": 0,
+        "select": "DOI,title,author,URL,container-title,published,published-print,published-online,issued,created",
+    }
+    items = []
+    seen = set()
+    empty_match_pages = 0
+    for _ in range(CROSSREF_MAX_PAGES):
+        payload = json.loads(request_bytes("https://api.crossref.org/works?{}".format(urllib.parse.urlencode(params))).decode("utf-8"))
+        message = payload.get("message") or {}
+        page = message.get("items") or []
+        if not isinstance(page, list) or not page:
+            break
+        has_match = False
+        for item in page:
+            doi = normalize_doi(item.get("DOI", "")) if isinstance(item, dict) else ""
+            container = " ".join(item.get("container-title") or []) if isinstance(item, dict) else ""
+            has_match = has_match or bool(
+                re.search(config["doiPattern"], doi, flags=re.I)
+                and re.search(config["containerPattern"], container, flags=re.I)
+            )
+            if doi and doi.lower() not in seen:
+                seen.add(doi.lower())
+                items.append(item)
+        empty_match_pages = 0 if has_match else empty_match_pages + 1
+        if empty_match_pages >= 3:
+            break
+        if len(page) < CROSSREF_PAGE_SIZE:
+            break
+        params["offset"] += len(page)
+    return items
+
+
+def crossref_record_to_paper(record, config, year, source_order):
+    if not isinstance(record, dict) or crossref_year(record) != year:
+        return None
+    doi = normalize_doi(record.get("DOI", ""))
+    container = " ".join(record.get("container-title") or [])
+    if not re.search(config["doiPattern"], doi, flags=re.I) or not re.search(config["containerPattern"], container, flags=re.I):
+        return None
+    title = clean_text((record.get("title") or [""])[0])
+    if not title:
+        return None
+    url = str(record.get("URL") or "https://doi.org/{}".format(doi))
+    abstract = clean_text(record.get("abstract")) or NO_ABSTRACT
+    return {
+        "id": stable_paper_id("conference", doi, url, title),
+        "source": "conference",
+        "sourceId": config["id"],
+        "sourceLabel": config["label"],
+        "journal": config["fullName"],
+        "date": "{}-07-01".format(year),
+        "sortDate": "{}-07-01".format(year),
+        "sourceOrder": source_order,
+        "category": "{} {}".format(config["label"], year),
+        "title": title,
+        "authors": format_authors(crossref_author_names(record)),
+        "abstract": abstract,
+        "tags": [config["label"], "IEEE", "Crossref"],
+        "url": url,
+        "pdfUrl": next((link.get("URL", "") for link in record.get("link") or [] if isinstance(link, dict) and link.get("content-type") == "application/pdf"), ""),
+        "doi": doi,
+        "conferenceYear": year,
+    }
+
+
+def ieee_conference_record_to_paper(record, config, year, source_order):
+    if not isinstance(record, dict):
+        return None
+    title = clean_text(record.get("title") or record.get("articleTitle"))
+    doi = normalize_doi(record.get("doi", ""))
+    if not title or not doi or not re.search(config["doiPattern"], doi, flags=re.I):
+        return None
+    record_year = record.get("publication_year") or record.get("publicationYear") or year
+    try:
+        if int(record_year) != year:
+            return None
+    except (TypeError, ValueError):
+        return None
+    url = record.get("html_url") or record.get("htmlLink") or record.get("documentLink") or ""
+    url = urllib.parse.urljoin("https://ieeexplore.ieee.org", url) if url else ("https://doi.org/{}".format(doi) if doi else "https://ieeexplore.ieee.org")
+    authors = record.get("authors") or []
+    if isinstance(authors, dict):
+        authors = authors.get("authors") or authors.get("author") or []
+    names = []
+    for author in authors if isinstance(authors, list) else [authors]:
+        if isinstance(author, dict):
+            names.append(author.get("full_name") or author.get("preferredName") or author.get("normalizedName") or author.get("name") or "")
+        else:
+            names.append(str(author))
+    return {
+        "id": stable_paper_id("conference", doi, url, title),
+        "source": "conference",
+        "sourceId": config["id"],
+        "sourceLabel": config["label"],
+        "journal": config["fullName"],
+        "date": "{}-07-01".format(year),
+        "sortDate": "{}-07-01".format(year),
+        "sourceOrder": source_order,
+        "category": "{} {}".format(config["label"], year),
+        "title": title,
+        "authors": format_authors(names),
+        "abstract": clean_text(record.get("abstract")) or NO_ABSTRACT,
+        "tags": [config["label"], "IEEE Xplore"],
+        "url": url,
+        "pdfUrl": record.get("pdf_url") or record.get("pdfLink") or "",
+        "doi": doi,
+        "conferenceYear": year,
+    }
+
+
+def fetch_ieee_conference_api(config, year, api_key):
+    params = {
+        "apikey": api_key,
+        "querytext": config["conference"],
+        "publication_year": year,
+        "start_record": 1,
+        "max_records": 200,
+        "sort_order": "asc",
+    }
+    papers = []
+    for _ in range(10):
+        payload = json.loads(request_bytes("https://ieeexploreapi.ieee.org/api/v1/search/articles?{}".format(urllib.parse.urlencode(params))).decode("utf-8"))
+        records = payload.get("articles") or []
+        if not records:
+            break
+        papers.extend(
+            paper for paper in (
+                ieee_conference_record_to_paper(record, config, year, len(papers) + index)
+                for index, record in enumerate(records)
+            ) if paper
+        )
+        total = int(payload.get("total_records") or len(papers))
+        if params["start_record"] + len(records) >= total:
+            break
+        params["start_record"] += len(records)
+    return papers
+
+
+def fetch_ieee_conference(config, range_days=DEFAULT_RANGE_DAYS):
+    years = (utc_now().year, utc_now().year - 1)
+    api_key = os.environ.get("PAPERLANE_IEEE_API_KEY", "").strip() or os.environ.get("IEEE_XPLORE_API_KEY", "").strip()
+    if api_key:
+        papers = []
+        try:
+            for year in years:
+                papers.extend(fetch_ieee_conference_api(config, year, api_key))
+        except Exception:
+            papers = []
+        if papers:
+            return {"papers": deduplicate(papers), "limited": False, "note": "IEEE Xplore API 会议题录", "mode": "ieee-api"}
+    papers = []
+    for year in years:
+        papers.extend(
+            paper for paper in (
+                crossref_record_to_paper(record, config, year, len(papers) + index)
+                for index, record in enumerate(crossref_items(config, year))
+            ) if paper
+        )
+    if not papers:
+        raise ValueError("IEEE 未返回 {} 最近两届会议论文".format(config["label"]))
+    return {"papers": deduplicate(papers), "limited": False, "note": "Crossref IEEE DOI 会议元数据", "mode": "crossref-ieee"}
 
 
 def official_paper_url(value):
@@ -678,13 +988,19 @@ def fetch_official_conference(config, range_days=DEFAULT_RANGE_DAYS):
 
 
 def fetch_conference(config, range_days=DEFAULT_RANGE_DAYS):
-    primary = fetch_openreview if config.get("sourceType") == "openreview" else fetch_official_conference
+    source_type = config.get("sourceType")
+    primary = {
+        "openreview": fetch_openreview,
+        "ieee-conference": fetch_ieee_conference,
+        "official": fetch_official_conference,
+    }.get(source_type, fetch_official_conference)
     try:
         return primary(config, range_days)
     except Exception as primary_error:
         fallback = fetch_dblp(config, range_days)
         fallback["note"] = "{}；主来源暂不可用，已回退 DBLP：{}".format(fallback.get("note", ""), primary_error)
         fallback["mode"] = "dblp-fallback"
+        fallback["error"] = "{}: {}".format(type(primary_error).__name__, primary_error)
         return fallback
 
 
@@ -855,17 +1171,19 @@ def source_job(source_id, label, callback):
             limited = bool(result.get("limited"))
             note = result.get("note", "")
             mode = result.get("mode", "")
+            result_error = result.get("error", "")
         else:
             papers = result
             limited = False
             note = ""
             mode = ""
+            result_error = ""
         return {
             "id": source_id,
             "label": label,
             "papers": papers,
             "count": len(papers),
-            "error": "",
+            "error": result_error,
             "limited": limited,
             "note": note,
             "mode": mode,
@@ -1379,7 +1697,7 @@ def build_static_site(output_directory, refresh=True, range_days=STATIC_RANGE_DA
     )
     (output / "supabase-config.js").write_text(config, encoding="utf-8")
 
-    source_version = {"version": "0.7.0"}
+    source_version = {"version": "0.9.0"}
     try:
         with (ROOT / "version.json").open("r", encoding="utf-8") as handle:
             source_version.update(json.load(handle))

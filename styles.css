@@ -111,6 +111,10 @@ button:disabled, input:disabled { cursor: not-allowed; opacity: 0.52; }
 .feed-metrics { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .feed-metrics strong { color: var(--ink); }
 .metric-divider { width: 1px; height: 14px; background: var(--line); }
+.translation-control { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: #f3f6f6; }
+.translation-button { min-width: 34px; height: 25px; padding: 0 7px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 11px; line-height: 1; }
+.translation-button:hover { color: var(--ink); }
+.translation-button.active { background: var(--surface); color: var(--teal); font-weight: 750; box-shadow: 0 1px 2px rgba(20,43,59,0.08); }
 .feed-controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-top: 24px; }
 .search-field { display: flex; align-items: center; gap: 9px; min-width: 240px; flex: 1; height: 40px; padding: 0 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--faint); }
 .search-field input { min-width: 0; flex: 1; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 13px; }
@@ -287,7 +291,7 @@ button:disabled, input:disabled { cursor: not-allowed; opacity: 0.52; }
   .main-content { padding: 24px 18px 60px; }
   .feed-heading { align-items: flex-start; flex-direction: column; gap: 10px; }
   .feed-heading h2 { font-size: 24px; }
-  .feed-metrics { align-self: stretch; justify-content: space-between; }
+  .feed-metrics { align-self: stretch; justify-content: space-between; flex-wrap: wrap; }
   .feed-controls { margin-top: 16px; }
   .feed-controls { flex-wrap: wrap; }
   .time-range-control { width: 100%; }

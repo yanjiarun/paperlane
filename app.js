@@ -1,5 +1,8 @@
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
 const DEFAULT_PAGE_SIZE = 50;
+const TRANSLATION_MODE_KEY = "paperlane-translation-mode-v1";
+const TRANSLATION_BATCH_SIZE = 8;
+const TRANSLATION_REQUEST_TIMEOUT = 30000;
 
 const sourceCatalog = [
   { id: "all", label: "全部论文", icon: "ALL", color: "#102a43", group: "all" },
@@ -321,7 +324,8 @@ const state = {
   sidebarWidth: 246,
   dataMode: usesStaticData() ? "static" : "local",
   dataUpdatedAt: "",
-  appVersion: "0.7.0",
+  translationMode: "original",
+  appVersion: "0.9.0",
 };
 
 const store = new window.PaperlaneStore();
@@ -352,6 +356,7 @@ const els = {
   lastUpdated: document.querySelector("#lastUpdated"),
   sourceStripText: document.querySelector("#sourceStripText"),
   sourceStripMeta: document.querySelector("#sourceStripMeta"),
+  translationControl: document.querySelector("#translationControl"),
   connectionState: document.querySelector("#connectionState"),
   todayBreadcrumb: document.querySelector("#todayBreadcrumb"),
   manageSourcesButton: document.querySelector("#manageSourcesButton"),
@@ -410,6 +415,11 @@ let serviceWorkerRegistration = null;
 let serviceWorkerSetupPromise = null;
 let lastSyncError = "";
 let abstractResizeTimer = 0;
+let translationRequestId = 0;
+let translationScheduleId = 0;
+let translationController = null;
+let translationUnavailable = false;
+const translations = new Map();
 const expandedAbstracts = new Set();
 const collapsibleAbstracts = new Set();
 
@@ -637,6 +647,197 @@ function currentPapers() {
   }).sort(comparePapers);
 }
 
+function translationSourceText(paper) {
+  return `${paper.title || ""}\n${paper.abstract || ""}`;
+}
+
+function translationSourceHash(paper) {
+  let hash = 2166136261;
+  for (const character of translationSourceText(paper)) {
+    hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function translationRecordFor(paper) {
+  const record = translations.get(paper.id);
+  return record && record.sourceHash === translationSourceHash(paper) ? record : null;
+}
+
+function localizedPaper(paper) {
+  if (state.translationMode !== "zh") return paper;
+  const translation = translationRecordFor(paper);
+  if (!translation) return paper;
+  return {
+    ...paper,
+    title: translation.titleZh || paper.title,
+    abstract: translation.abstractZh || paper.abstract,
+  };
+}
+
+function updateTranslationControl() {
+  els.translationControl?.querySelectorAll("[data-translation-mode]").forEach((button) => {
+    const active = button.dataset.translationMode === state.translationMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function translationService() {
+  const config = window.PAPERLANE_SUPABASE || {};
+  const base = String(config.url || "").trim().replace(/\/+?(?:rest\/v1)?\/?$/i, "");
+  const key = String(config.anonKey || "").trim();
+  if (!base || !key) return null;
+  return {
+    endpoint: `${base}/functions/v1/translate`,
+    apikey: key,
+  };
+}
+
+async function requestTranslation(items, parentSignal) {
+  const service = translationService();
+  if (!service) throw new Error("翻译服务未配置，请先配置 Supabase");
+  if (cloud.session) await cloud.ensureSession().catch(() => {});
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  parentSignal?.addEventListener("abort", abort, { once: true });
+  const timeout = window.setTimeout(() => controller.abort(), TRANSLATION_REQUEST_TIMEOUT);
+  try {
+    const headers = {
+      apikey: service.apikey,
+      "Content-Type": "application/json",
+    };
+    if (cloud.session?.access_token) headers.Authorization = `Bearer ${cloud.session.access_token}`;
+    const response = await fetch(service.endpoint, {
+      method: "POST",
+      signal: controller.signal,
+      headers,
+      body: JSON.stringify({ items }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || payload.detail || `翻译服务返回 ${response.status}`);
+    if (!Array.isArray(payload.translations)) throw new Error("翻译服务返回格式无效");
+    return payload.translations;
+  } finally {
+    window.clearTimeout(timeout);
+    parentSignal?.removeEventListener("abort", abort);
+  }
+}
+
+function updateTranslatedCard(paperId) {
+  const paper = state.papers.find((item) => item.id === paperId);
+  const card = els.paperList.querySelector(`[data-paper-id="${CSS.escape(paperId)}"]`);
+  if (!paper || !card) return;
+  const localized = localizedPaper(paper);
+  const title = card.querySelector(".paper-title");
+  const abstract = card.querySelector(".paper-abstract");
+  const toggle = card.querySelector(".abstract-toggle");
+  const excerpt = /(?:\.\.\.|…)$/.test(String(localized.abstract || "").trim());
+  const expanded = expandedAbstracts.has(paperId);
+  if (title) title.textContent = localized.title;
+  if (abstract) {
+    abstract.textContent = localized.abstract;
+    abstract.classList.toggle("expanded", expanded);
+  }
+  if (toggle) {
+    toggle.textContent = expanded ? "收起摘要" : excerpt ? "展开摘要片段" : "展开摘要";
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.hidden = !expanded && !excerpt;
+  }
+  const sourceNote = card.querySelector(".abstract-source-note");
+  if (expanded && excerpt && !sourceNote) {
+    const note = document.createElement("span");
+    note.className = "abstract-source-note";
+    note.textContent = "来源只提供摘要片段，请查看原文获取完整内容";
+    card.querySelector(".paper-abstract-wrap")?.append(note);
+  } else if ((!expanded || !excerpt) && sourceNote) {
+    sourceNote.remove();
+  }
+  window.requestAnimationFrame(updateAbstractToggles);
+}
+
+function schedulePageTranslation() {
+  const scheduleId = ++translationScheduleId;
+  if (state.translationMode !== "zh" || translationUnavailable) return;
+  Promise.resolve().then(() => {
+    if (scheduleId === translationScheduleId) translateCurrentPage().catch(() => {});
+  });
+}
+
+async function translateCurrentPage() {
+  if (translationController) translationController.abort();
+  const requestId = ++translationRequestId;
+  if (state.translationMode !== "zh") return;
+  const controller = new AbortController();
+  translationController = controller;
+  const papers = currentPapers();
+  const start = (state.currentPage - 1) * state.pageSize;
+  const page = papers.slice(start, start + state.pageSize);
+  if (!page.length) {
+    if (translationController === controller) translationController = null;
+    return;
+  }
+
+  const prepared = page.map((paper) => {
+    const sourceHash = translationSourceHash(paper);
+    return { paper, sourceHash, key: `${paper.id}|zh|${sourceHash}` };
+  });
+  const cached = await store.getTranslations(prepared.map((item) => item.key)).catch(() => []);
+  if (requestId !== translationRequestId || controller.signal.aborted) return;
+  cached.forEach((record) => translations.set(record.paperId, record));
+  cached.forEach((record) => updateTranslatedCard(record.paperId));
+  const missing = prepared.filter((item) => !translationRecordFor(item.paper));
+  let failed = false;
+  for (let index = 0; index < missing.length; index += TRANSLATION_BATCH_SIZE) {
+    if (requestId !== translationRequestId || controller.signal.aborted) return;
+    const batch = missing.slice(index, index + TRANSLATION_BATCH_SIZE);
+    try {
+      const results = await requestTranslation(
+        batch.map(({ paper }) => ({ id: paper.id, title: paper.title, abstract: paper.abstract || "" })),
+        controller.signal,
+      );
+      const records = results.map((result) => {
+        const item = batch.find(({ paper }) => paper.id === result.id);
+        if (!item) return null;
+        return {
+          key: item.key,
+          paperId: item.paper.id,
+          sourceHash: item.sourceHash,
+          targetLang: "ZH",
+          titleZh: String(result.titleZh || "").trim(),
+          abstractZh: String(result.abstractZh || "").trim(),
+          translatedAt: new Date().toISOString(),
+        };
+      }).filter((record) => record && record.titleZh);
+      records.forEach((record) => translations.set(record.paperId, record));
+      await store.saveTranslations(records).catch(() => {});
+      records.forEach((record) => updateTranslatedCard(record.paperId));
+    } catch (error) {
+      if (controller.signal.aborted || error?.name === "AbortError") return;
+      failed = true;
+      translationUnavailable = true;
+      break;
+    }
+  }
+  if (failed && requestId === translationRequestId) showToast("中文翻译暂不可用，已保留原文");
+  if (translationController === controller) translationController = null;
+}
+
+function setTranslationMode(mode) {
+  if (!["original", "zh"].includes(mode) || state.translationMode === mode) return;
+  state.translationMode = mode;
+  translationUnavailable = false;
+  translationScheduleId += 1;
+  if (mode !== "zh") {
+    translationRequestId += 1;
+    translationController?.abort();
+    translationController = null;
+  }
+  try { localStorage.setItem(TRANSLATION_MODE_KEY, mode); } catch { /* optional preference */ }
+  updateTranslationControl();
+  renderPapers();
+}
+
 function totalPagesFor(papers = currentPapers()) {
   return Math.max(1, Math.ceil(papers.length / state.pageSize));
 }
@@ -660,8 +861,10 @@ function restoreUiPreferences() {
   try {
     const pageSize = Number(localStorage.getItem("paperlane-page-size-v1"));
     const sidebarWidth = Number(localStorage.getItem("paperlane-sidebar-width-v1"));
+    const translationMode = localStorage.getItem(TRANSLATION_MODE_KEY);
     if (PAGE_SIZE_OPTIONS.includes(pageSize)) state.pageSize = pageSize;
     if (Number.isFinite(sidebarWidth)) state.sidebarWidth = Math.min(420, Math.max(220, sidebarWidth));
+    if (["original", "zh"].includes(translationMode)) state.translationMode = translationMode;
   } catch {
     // Browser privacy settings may disable localStorage; defaults remain valid.
   }
@@ -707,6 +910,7 @@ function renderPapers() {
   els.visibleCount.textContent = papers.length;
   renderPagination(papers.length);
   updateFeedTitle();
+  schedulePageTranslation();
 }
 
 function updateFeedMetrics() {
@@ -734,6 +938,7 @@ function updatePaperCardState(paperId) {
 }
 
 function renderPaper(paper) {
+  const localized = localizedPaper(paper);
   const isRead = Boolean(state.read[paper.id]);
   const isImportant = Boolean(state.important[paper.id]);
   const sourceClass = paper.source === "nature" ? "nature" : paper.source === "science" ? "science" : paper.source === "ieee" ? "ieee" : paper.source === "conference" ? "conference" : "";
@@ -741,7 +946,7 @@ function renderPaper(paper) {
     ? `${paper.issueLabel}${paper.issueType === "early-access" ? ` · ${paper.date.slice(0, 4)}` : ""}`
     : `${relativeDate(paper.date)} · ${formatDate(paper.date)}`;
   const abstractExpanded = expandedAbstracts.has(paper.id);
-  const abstractExcerpt = /(?:\.\.\.|…)$/.test(String(paper.abstract || "").trim());
+  const abstractExcerpt = /(?:\.\.\.|…)$/.test(String(localized.abstract || "").trim());
   return `
     <article class="paper-card ${isRead ? "read" : ""} ${isImportant ? "important" : ""}" data-paper-id="${escapeHtml(paper.id)}">
       <div class="paper-topline">
@@ -757,10 +962,10 @@ function renderPaper(paper) {
           <button class="more-button" data-action="group" title="添加到分组" aria-label="添加到分组">•••</button>
         </div>
       </div>
-      <h3 class="paper-title">${escapeHtml(paper.title)}</h3>
+      <h3 class="paper-title">${escapeHtml(localized.title)}</h3>
       <p class="paper-authors">${escapeHtml(paper.authors)}</p>
       <div class="paper-abstract-wrap">
-        <p class="paper-abstract ${abstractExpanded ? "expanded" : ""}">${escapeHtml(paper.abstract)}</p>
+        <p class="paper-abstract ${abstractExpanded ? "expanded" : ""}">${escapeHtml(localized.abstract)}</p>
         <button class="abstract-toggle" type="button" data-action="abstract" aria-expanded="${abstractExpanded}" ${abstractExpanded || collapsibleAbstracts.has(paper.id) ? "" : "hidden"}>${abstractExpanded ? "收起摘要" : abstractExcerpt ? "展开摘要片段" : "展开摘要"}</button>
         ${abstractExpanded && abstractExcerpt ? `<span class="abstract-source-note">来源只提供摘要片段，请查看原文获取完整内容</span>` : ""}
       </div>
@@ -825,6 +1030,7 @@ function render() {
   renderCounts();
   renderPapers();
   updateFilterButtons();
+  updateTranslationControl();
   updateFeedMetrics();
 }
 
@@ -1654,6 +1860,10 @@ els.pageSizeSelect.addEventListener("change", (event) => {
 els.previousPageButton.addEventListener("click", () => setPage(state.currentPage - 1));
 els.nextPageButton.addEventListener("click", () => setPage(state.currentPage + 1));
 els.pageJumpInput.addEventListener("change", (event) => setPage(event.target.value));
+els.translationControl?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-translation-mode]");
+  if (button) setTranslationMode(button.dataset.translationMode);
+});
 els.pageJumpInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();

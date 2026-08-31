@@ -2,8 +2,8 @@
   "use strict";
 
   const DB_NAME = "paperlane-data";
-  const DB_VERSION = 1;
-  const STORES = ["meta", "paperCache", "paperStates", "collections", "memberships", "snapshots", "outbox"];
+  const DB_VERSION = 2;
+  const STORES = ["meta", "paperCache", "paperStates", "collections", "memberships", "snapshots", "outbox", "translations"];
 
   function requestResult(request) {
     return new Promise((resolve, reject) => {
@@ -112,6 +112,21 @@
 
     async setMeta(key, value) {
       await this.put("meta", { key, value });
+    }
+
+    async getTranslations(keys) {
+      if (!this.db || !keys.length) return [];
+      const store = this.db.transaction("translations", "readonly").objectStore("translations");
+      const records = await Promise.all(keys.map((key) => requestResult(store.get(key))));
+      return records.filter(Boolean);
+    }
+
+    async saveTranslations(records) {
+      if (!this.db || !records.length) return;
+      const transaction = this.db.transaction("translations", "readwrite");
+      const store = transaction.objectStore("translations");
+      records.forEach((record) => store.put(record));
+      await transactionDone(transaction);
     }
 
     async savePaperCache(papers) {
