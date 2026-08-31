@@ -1,4 +1,5 @@
-const PAGE_SIZE = 60;
+const PAGE_SIZE_OPTIONS = [20, 50, 100];
+const DEFAULT_PAGE_SIZE = 50;
 
 const sourceCatalog = [
   { id: "all", label: "全部论文", icon: "ALL", color: "#102a43", group: "all" },
@@ -315,10 +316,12 @@ const state = {
   important: {},
   groups: [...defaultGroups],
   groupItems: {},
-  renderLimit: PAGE_SIZE,
+  pageSize: DEFAULT_PAGE_SIZE,
+  currentPage: 1,
+  sidebarWidth: 246,
   dataMode: usesStaticData() ? "static" : "local",
   dataUpdatedAt: "",
-  appVersion: "0.6.0",
+  appVersion: "0.7.0",
 };
 
 const store = new window.PaperlaneStore();
@@ -329,6 +332,8 @@ let syncTimer = 0;
 let refreshSequence = 0;
 
 const els = {
+  workspace: document.querySelector("#workspace"),
+  sidebarResizer: document.querySelector("#sidebarResizer"),
   sourceNav: document.querySelector("#sourceNav"),
   groupNav: document.querySelector("#groupNav"),
   paperList: document.querySelector("#paperList"),
@@ -357,7 +362,13 @@ const els = {
   sourceSelectionSummary: document.querySelector("#sourceSelectionSummary"),
   timeRangeSelect: document.querySelector("#timeRangeSelect"),
   ieeeScopeSelect: document.querySelector("#ieeeScopeSelect"),
-  loadMoreButton: document.querySelector("#loadMoreButton"),
+  pagination: document.querySelector("#pagination"),
+  paginationSummary: document.querySelector("#paginationSummary"),
+  pageSizeSelect: document.querySelector("#pageSizeSelect"),
+  previousPageButton: document.querySelector("#previousPageButton"),
+  nextPageButton: document.querySelector("#nextPageButton"),
+  pageJumpInput: document.querySelector("#pageJumpInput"),
+  pageTotal: document.querySelector("#pageTotal"),
   profileButton: document.querySelector("#profileButton"),
   accountModal: document.querySelector("#accountModal"),
   accountMode: document.querySelector("#accountMode"),
@@ -401,6 +412,9 @@ let lastSyncError = "";
 let abstractResizeTimer = 0;
 const expandedAbstracts = new Set();
 const collapsibleAbstracts = new Set();
+
+restoreUiPreferences();
+applySidebarWidth(state.sidebarWidth, false);
 
 function validSettings(settings) {
   if (!settings) return null;
@@ -533,7 +547,7 @@ function renderSources() {
     const count = Object.values(state.groupItems[group.id] || {}).filter(Boolean).length;
     return `
       <div class="nav-item group-nav-item ${state.activeSource === `group:${group.id}` ? "active" : ""}">
-        <button class="group-select" data-source="group:${escapeHtml(group.id)}">
+        <button class="group-select" data-source="group:${escapeHtml(group.id)}" title="${escapeHtml(group.name)}">
           <span class="group-dot" style="background:${safeColor(group.color)}"></span>
           <span>${escapeHtml(group.name)}</span>
           <span class="nav-count">${count}</span>
@@ -580,7 +594,7 @@ async function saveSources() {
   state.enabledSources = [...sourcePickerSelection];
   if (state.activeSource !== "all" && !state.enabledSources.includes(state.activeSource)) state.activeSource = "all";
   await saveSettings();
-  state.renderLimit = PAGE_SIZE;
+  resetPagination();
   render();
   els.sourcesModal.close();
   refreshPapers(true, false);
@@ -623,19 +637,75 @@ function currentPapers() {
   }).sort(comparePapers);
 }
 
+function totalPagesFor(papers = currentPapers()) {
+  return Math.max(1, Math.ceil(papers.length / state.pageSize));
+}
+
+function resetPagination() {
+  state.currentPage = 1;
+}
+
+function setPage(page) {
+  const totalPages = totalPagesFor();
+  const nextPage = Math.min(Math.max(1, Number(page) || 1), totalPages);
+  if (nextPage === state.currentPage) {
+    renderPagination(currentPapers().length);
+    return;
+  }
+  state.currentPage = nextPage;
+  renderPapers();
+}
+
+function restoreUiPreferences() {
+  try {
+    const pageSize = Number(localStorage.getItem("paperlane-page-size-v1"));
+    const sidebarWidth = Number(localStorage.getItem("paperlane-sidebar-width-v1"));
+    if (PAGE_SIZE_OPTIONS.includes(pageSize)) state.pageSize = pageSize;
+    if (Number.isFinite(sidebarWidth)) state.sidebarWidth = Math.min(420, Math.max(220, sidebarWidth));
+  } catch {
+    // Browser privacy settings may disable localStorage; defaults remain valid.
+  }
+}
+
+function applySidebarWidth(width, persist = true) {
+  state.sidebarWidth = Math.min(420, Math.max(220, Math.round(width)));
+  els.workspace?.style.setProperty("--sidebar-width", `${state.sidebarWidth}px`);
+  if (persist) {
+    try { localStorage.setItem("paperlane-sidebar-width-v1", String(state.sidebarWidth)); } catch { /* optional preference */ }
+  }
+}
+
+function renderPagination(totalItems) {
+  const totalPages = Math.max(1, Math.ceil(totalItems / state.pageSize));
+  state.currentPage = Math.min(Math.max(1, state.currentPage), totalPages);
+  if (els.pagination) els.pagination.hidden = totalItems === 0;
+  if (els.pageSizeSelect) els.pageSizeSelect.value = String(state.pageSize);
+  if (els.pageTotal) els.pageTotal.textContent = String(totalPages);
+  if (els.pageJumpInput) {
+    els.pageJumpInput.value = String(state.currentPage);
+    els.pageJumpInput.max = String(totalPages);
+  }
+  if (els.previousPageButton) els.previousPageButton.disabled = state.currentPage <= 1;
+  if (els.nextPageButton) els.nextPageButton.disabled = state.currentPage >= totalPages;
+  if (els.paginationSummary) {
+    const first = totalItems ? (state.currentPage - 1) * state.pageSize + 1 : 0;
+    const last = Math.min(state.currentPage * state.pageSize, totalItems);
+    els.paginationSummary.textContent = totalItems ? `显示 ${first}-${last} / 共 ${totalItems} 篇` : "";
+  }
+}
+
 function renderPapers() {
   const papers = currentPapers();
-  const rendered = papers.slice(0, state.renderLimit);
+  const totalPages = totalPagesFor(papers);
+  state.currentPage = Math.min(Math.max(1, state.currentPage), totalPages);
+  const start = (state.currentPage - 1) * state.pageSize;
+  const rendered = papers.slice(start, start + state.pageSize);
   els.paperList.innerHTML = rendered.map(renderPaper).join("");
   window.requestAnimationFrame(updateAbstractToggles);
   els.paperList.hidden = papers.length === 0;
   els.emptyState.hidden = papers.length !== 0;
   els.visibleCount.textContent = papers.length;
-  if (els.loadMoreButton) {
-    const remaining = Math.max(0, papers.length - rendered.length);
-    els.loadMoreButton.hidden = remaining === 0;
-    els.loadMoreButton.textContent = remaining ? `显示更多（剩余 ${remaining} 篇）` : "";
-  }
+  renderPagination(papers.length);
   updateFeedTitle();
 }
 
@@ -643,6 +713,24 @@ function updateFeedMetrics() {
   // Keep the count next to the update timestamp derived from the same view
   // after every state change, including async refresh and cloud sync.
   if (els.visibleCount) els.visibleCount.textContent = String(currentPapers().length);
+}
+
+function updatePaperCardState(paperId) {
+  const card = els.paperList.querySelector(`[data-paper-id="${CSS.escape(paperId)}"]`);
+  if (!card) return;
+  const isRead = Boolean(state.read[paperId]);
+  const isImportant = Boolean(state.important[paperId]);
+  card.classList.toggle("read", isRead);
+  card.classList.toggle("important", isImportant);
+  const readButton = card.querySelector('[data-action="read"]');
+  if (readButton) readButton.textContent = isRead ? "已读" : "标记已读";
+  const starButton = card.querySelector('[data-action="important"]');
+  if (starButton) {
+    starButton.classList.toggle("active", isImportant);
+    starButton.textContent = isImportant ? "★" : "☆";
+    starButton.title = isImportant ? "取消重要" : "标记重要";
+    starButton.setAttribute("aria-label", isImportant ? "取消重要" : "标记重要");
+  }
 }
 
 function renderPaper(paper) {
@@ -659,6 +747,7 @@ function renderPaper(paper) {
       <div class="paper-topline">
         <div class="paper-meta">
           <span class="source-chip ${sourceClass}">${escapeHtml(paper.sourceLabel)}</span>
+          ${paper.decisionLabel ? `<span class="decision-chip ${paper.decisionLabel.toLowerCase()}">${escapeHtml(paper.decisionLabel)}</span>` : ""}
           <span class="meta-separator">·</span>
           ${paper.issueLabel ? "" : `<span>${escapeHtml(paper.category)}</span><span class="meta-separator">·</span>`}
           <span>${escapeHtml(paperTiming)}</span>
@@ -759,19 +848,29 @@ async function handlePaperAction(event) {
   }
   if (action === "read") {
     state.read[paperId] = !state.read[paperId];
-    await store.savePaperState(activeNamespace, paperId, state.read[paperId], state.important[paperId]);
-    render();
+    updatePaperCardState(paperId);
+    if (state.activeFilter !== "all") renderPapers();
+    renderCounts();
+    updateFeedMetrics();
+    store.savePaperState(activeNamespace, paperId, state.read[paperId], state.important[paperId]).catch(() => showToast("本地记录保存失败"));
     showToast(state.read[paperId] ? "已标记为已读" : "已恢复为未读");
     scheduleSync();
+    return;
   }
   if (action === "important") {
     state.important[paperId] = !state.important[paperId];
-    await store.savePaperState(activeNamespace, paperId, state.read[paperId], state.important[paperId]);
-    if (state.important[paperId]) await store.saveSnapshot(activeNamespace, paper);
-    else if (!groupIdsForPaper(paperId).length) await store.deleteSnapshot(activeNamespace, paperId);
-    render();
+    updatePaperCardState(paperId);
+    if (state.activeFilter !== "all") renderPapers();
+    renderCounts();
+    updateFeedMetrics();
+    const stateSave = store.savePaperState(activeNamespace, paperId, state.read[paperId], state.important[paperId]);
+    const snapshotSave = state.important[paperId]
+      ? store.saveSnapshot(activeNamespace, paper)
+      : groupIdsForPaper(paperId).length ? Promise.resolve() : store.deleteSnapshot(activeNamespace, paperId);
+    Promise.all([stateSave, snapshotSave]).catch(() => showToast("本地记录保存失败"));
     showToast(state.important[paperId] ? "已加入重要文献" : "已取消重要标记");
     scheduleSync();
+    return;
   }
   if (action === "group") openGroupPicker(paper);
   if (action === "share") sharePaper(paper);
@@ -832,7 +931,9 @@ async function exportGroupTitles(groupId, mode = "clipboard") {
     const link = document.createElement("a");
     link.href = url;
     link.download = `paperlane-${group.name.replace(/[\\/:*?"<>|]/g, "_")}-titles.txt`;
+    document.body.appendChild(link);
     link.click();
+    link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     showToast(`已导出 ${papers.length} 篇论文标题`);
     return;
@@ -1427,6 +1528,27 @@ async function installApp() {
   showInstallGuide();
 }
 
+let sidebarDrag = null;
+els.sidebarResizer?.addEventListener("pointerdown", (event) => {
+  if (window.matchMedia("(max-width: 840px)").matches) return;
+  sidebarDrag = { startX: event.clientX, startWidth: state.sidebarWidth };
+  els.sidebarResizer.classList.add("dragging");
+  els.sidebarResizer.setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+});
+els.sidebarResizer?.addEventListener("pointermove", (event) => {
+  if (!sidebarDrag) return;
+  applySidebarWidth(sidebarDrag.startWidth + event.clientX - sidebarDrag.startX);
+});
+els.sidebarResizer?.addEventListener("pointerup", () => {
+  sidebarDrag = null;
+  els.sidebarResizer.classList.remove("dragging");
+});
+els.sidebarResizer?.addEventListener("pointercancel", () => {
+  sidebarDrag = null;
+  els.sidebarResizer.classList.remove("dragging");
+});
+
 document.addEventListener("click", async (event) => {
   const groupExportButton = event.target.closest("[data-group-export]");
   if (groupExportButton) {
@@ -1445,14 +1567,14 @@ document.addEventListener("click", async (event) => {
   const sourceButton = event.target.closest("[data-source]");
   if (sourceButton) {
     state.activeSource = sourceButton.dataset.source;
-    state.renderLimit = PAGE_SIZE;
+    resetPagination();
     render();
     return;
   }
   const filterButton = event.target.closest("[data-filter]");
   if (filterButton) {
     state.activeFilter = filterButton.dataset.filter;
-    state.renderLimit = PAGE_SIZE;
+    resetPagination();
     render();
   }
 });
@@ -1460,21 +1582,21 @@ document.addEventListener("click", async (event) => {
 els.paperList.addEventListener("click", (event) => handlePaperAction(event).catch(() => showToast("本地记录保存失败")));
 els.searchInput.addEventListener("input", (event) => {
   state.query = event.target.value;
-  state.renderLimit = PAGE_SIZE;
+  resetPagination();
   renderPapers();
 });
 document.querySelector("#refreshButton").addEventListener("click", () => refreshPapers(true, false));
 els.timeRangeSelect.addEventListener("change", async () => {
   state.rangeDays = Number(els.timeRangeSelect.value);
   await saveSettings();
-  state.renderLimit = PAGE_SIZE;
+  resetPagination();
   render();
   showToast(`已设为${rangeLabel()}，请点击刷新`);
 });
 els.ieeeScopeSelect.addEventListener("change", async () => {
   state.ieeeScope = els.ieeeScopeSelect.value;
   await saveSettings();
-  state.renderLimit = PAGE_SIZE;
+  resetPagination();
   render();
   showToast(`IEEE 已设为${ieeeScopeLabel()}，请点击刷新`);
 });
@@ -1521,9 +1643,22 @@ els.retryInstallButton.addEventListener("click", async () => {
 });
 els.groupForm.addEventListener("submit", async (event) => { event.preventDefault(); await createGroup(); });
 els.paperGroupForm.addEventListener("submit", async (event) => { event.preventDefault(); await savePaperGroups(); });
-els.loadMoreButton.addEventListener("click", () => {
-  state.renderLimit += PAGE_SIZE;
+els.pageSizeSelect.addEventListener("change", (event) => {
+  const pageSize = Number(event.target.value);
+  if (!PAGE_SIZE_OPTIONS.includes(pageSize)) return;
+  state.pageSize = pageSize;
+  resetPagination();
+  try { localStorage.setItem("paperlane-page-size-v1", String(pageSize)); } catch { /* optional preference */ }
   renderPapers();
+});
+els.previousPageButton.addEventListener("click", () => setPage(state.currentPage - 1));
+els.nextPageButton.addEventListener("click", () => setPage(state.currentPage + 1));
+els.pageJumpInput.addEventListener("change", (event) => setPage(event.target.value));
+els.pageJumpInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    setPage(event.target.value);
+  }
 });
 els.profileButton.addEventListener("click", openAccountModal);
 els.syncCard.addEventListener("click", openAccountModal);

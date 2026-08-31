@@ -40,7 +40,7 @@
         <button class="filter-button" data-filter="important">重要 <span id="importantCount">0</span></button>
       </div>
 
-      <div class="workspace">
+      <div class="workspace" id="workspace">
         <aside class="sidebar">
           <div class="sidebar-section source-section">
             <div class="section-label-row">
@@ -70,6 +70,7 @@
               <span aria-hidden="true">↓</span> 安装到设备
             </button>
           </div>
+          <div class="sidebar-resizer" id="sidebarResizer" role="separator" aria-label="调整侧栏宽度" title="拖动调整侧栏宽度"></div>
         </aside>
 
         <main class="main-content">
@@ -135,7 +136,22 @@
           </section>
 
           <section class="paper-list" id="paperList" aria-live="polite"></section>
-          <button class="load-more-button" id="loadMoreButton" type="button" hidden>显示更多</button>
+          <nav class="pagination" id="pagination" aria-label="论文分页" hidden>
+            <div class="pagination-summary" id="paginationSummary"></div>
+            <div class="pagination-controls">
+              <label class="page-size-control">每页
+                <select id="pageSizeSelect" aria-label="每页论文数">
+                  <option value="20">20</option>
+                  <option value="50" selected>50</option>
+                  <option value="100">100</option>
+                </select>
+                篇
+              </label>
+              <button class="page-button" id="previousPageButton" type="button" aria-label="上一页">‹</button>
+              <span class="page-indicator"><input id="pageJumpInput" type="number" min="1" inputmode="numeric" aria-label="跳转到页码" /> / <strong id="pageTotal">1</strong></span>
+              <button class="page-button" id="nextPageButton" type="button" aria-label="下一页">›</button>
+            </div>
+          </nav>
 
           <div class="empty-state" id="emptyState" hidden>
             <div class="empty-mark" aria-hidden="true">⌁</div>
@@ -262,7 +278,7 @@
 
         <div class="account-divider"></div>
         <section class="device-section">
-          <div class="device-heading"><strong>当前设备 <span class="app-version" id="appVersion">v0.6.0</span></strong><span id="storageUsage">正在计算占用</span></div>
+          <div class="device-heading"><strong>当前设备 <span class="app-version" id="appVersion">v0.7.0</span></strong><span id="storageUsage">正在计算占用</span></div>
           <div class="device-actions">
             <button class="secondary-button" id="accountInstallButton" type="button">安装 Paperlane</button>
             <button class="secondary-button" id="exportButton" type="button">导出数据</button>

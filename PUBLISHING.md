@@ -26,7 +26,7 @@ GitHub Pages 上的刷新按钮用于检查最近一次 Actions 生成的数据�
 2. 在 **Build and deployment** 中将 Source 设为 **GitHub Actions**。
 3. 打开仓库的 **Actions** 页面，选择 **Deploy Paperlane to GitHub Pages**。
 4. 点击 **Run workflow** 执行第一次构建。
-5. 第一次抓取 39 个来源可能需要数分钟。
+5. 第一次抓取 45 个来源可能需要数分钟。
 
 成功后地址通常是：
 
@@ -90,12 +90,14 @@ GitHub Pages 上的刷新按钮用于检查最近一次 Actions 生成的数据�
 4. GitHub Actions 会自动重新部署。
 5. 已安装的 Paperlane 会提示“新版本可用”。
 
+升级只替换网页文件和 Service Worker 的应用缓存，不会删除浏览器 IndexedDB 中的已读、重要、分组、设置和离线题录。只要设备仍使用同一个地址（同一个 GitHub Pages 域名或同一个本机端口），这些记录会继续保留；清除浏览器网站数据、改用另一地址，或卸载时选择清除应用数据除外。登录同一个账号后，已读、重要和分组还可以从云端同步到其他设备。
+
 论文数据不需要人工提交。定时任务每 6 小时自动更新，生成数据按来源拆分，设备只下载当前勾选的来源。
 
-发布正式版本时，将 version.json 中的版本号改为新版本，例如 0.6.0，提交并推送，然后创建对应标签：
+发布正式版本时，将 version.json 中的版本号改为新版本，例如 0.7.0，提交并推送，然后创建对应标签：
 
-    git tag v0.6.0
-    git push origin v0.6.0
+    git tag v0.7.0
+    git push origin v0.7.0
 
 **Create Paperlane Release** 会自动生成一个可下载的 Windows 压缩包，并创建 GitHub Release 和更新说明。
 

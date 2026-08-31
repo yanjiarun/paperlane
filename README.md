@@ -21,7 +21,8 @@ Windows 上双击 **Start-Paperlane.bat**，浏览器会打开 http://localhost:
 
 - 论文缓存使用 IndexedDB，并在支持时通过浏览器原生 gzip 压缩。
 - 已读、重要和分组按单条记录保存，不复制整份论文列表。
-- 页面每次只渲染 60 篇论文，点击“显示更多”继续加载。
+- 页面按页渲染论文，支持每页 20、50 或 100 篇，可用上一页/下一页或页码输入框跳转。
+- 桌面端分组侧栏右边缘可以拖动调整宽度；分组名过长时会自动换行，悬停也可查看完整名称。
 - 每个分组右侧可一键复制全部论文标题，或下载为 TXT 文件。
 - Service Worker 只缓存应用文件；论文 API 响应不会被重复缓存。
 - 网络或云端不可用时，阅读与标记功能不受影响。
@@ -65,7 +66,7 @@ publishable/anon key 本来就是公开前端密钥，安全边界由数据库 R
 
 - arXiv：官方 API，支持最近 1 至 365 天，单次最多 500 篇。
 - Nature / Science：官方 RSS 当前公开的全部条目。
-- 顶会：通过 DBLP 公开检索接口加载 ICML、ICLR、NeurIPS、CVPR、ICRA、IROS 最近两届题录；标题、作者和论文集链接可用，摘要以来源提示代替。
+- 顶会：ICML、ICLR、NeurIPS、CVPR 优先从 OpenReview 已接收论文接口加载，ICRA、IROS 等 IEEE 会议优先读取会议官网；主来源受限时自动回退 DBLP。会议数据保留最近两届，OpenReview 论文会标记 Oral、Spotlight、Poster 或 Accepted，标题、作者、摘要和原文链接随来源提供。
 - IEEE：Xplore 官网页面接口，支持 Early Access、最新 1/2/3/5 期及组合；接口异常时回退官方 RSS。
 - 历史题录本地保留 730 天。论文原文始终通过出版社或 arXiv 原始链接打开，不缓存受版权保护的全文。
 
