@@ -325,7 +325,7 @@ const state = {
   dataMode: usesStaticData() ? "static" : "local",
   dataUpdatedAt: "",
   translationMode: "original",
-  appVersion: "0.9.0",
+  appVersion: "0.9.1",
 };
 
 const store = new window.PaperlaneStore();
@@ -684,6 +684,7 @@ function updateTranslationControl() {
 }
 
 function translationService() {
+  if (cloud.configurationIssue) return null;
   const config = window.PAPERLANE_SUPABASE || {};
   const base = String(config.url || "").trim().replace(/\/+?(?:rest\/v1)?\/?$/i, "");
   const key = String(config.anonKey || "").trim();
@@ -697,6 +698,11 @@ function translationService() {
 async function requestTranslation(items, parentSignal) {
   const service = translationService();
   if (!service) throw new Error("翻译服务未配置，请先配置 Supabase");
+  if (parentSignal?.aborted) {
+    const error = new Error("翻译请求已取消");
+    error.name = "AbortError";
+    throw error;
+  }
   if (cloud.session) await cloud.ensureSession().catch(() => {});
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -715,13 +721,26 @@ async function requestTranslation(items, parentSignal) {
       body: JSON.stringify({ items }),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || payload.detail || `翻译服务返回 ${response.status}`);
+    if (!response.ok) {
+      const error = new Error(payload.error || payload.detail || `翻译服务返回 ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
     if (!Array.isArray(payload.translations)) throw new Error("翻译服务返回格式无效");
     return payload.translations;
   } finally {
     window.clearTimeout(timeout);
     parentSignal?.removeEventListener("abort", abort);
   }
+}
+
+function translationFailureMessage(error) {
+  const status = Number(error?.status);
+  if (!translationService()) return "翻译服务未配置，请填写 Supabase 配置";
+  if (status === 401 || status === 403) return "翻译未授权，请检查 Supabase key 并重新部署函数";
+  if (status === 429) return "翻译额度或频率受限，请稍后重试";
+  if (status === 503) return "DeepL 密钥未配置，请设置 DEEPL_AUTH_KEY";
+  return "中文翻译暂不可用，已保留原文";
 }
 
 function updateTranslatedCard(paperId) {
@@ -788,6 +807,7 @@ async function translateCurrentPage() {
   cached.forEach((record) => updateTranslatedCard(record.paperId));
   const missing = prepared.filter((item) => !translationRecordFor(item.paper));
   let failed = false;
+  let failure = null;
   for (let index = 0; index < missing.length; index += TRANSLATION_BATCH_SIZE) {
     if (requestId !== translationRequestId || controller.signal.aborted) return;
     const batch = missing.slice(index, index + TRANSLATION_BATCH_SIZE);
@@ -796,6 +816,8 @@ async function translateCurrentPage() {
         batch.map(({ paper }) => ({ id: paper.id, title: paper.title, abstract: paper.abstract || "" })),
         controller.signal,
       );
+      const resultById = new Map(results.filter((result) => result?.id).map((result) => [result.id, result]));
+      if (batch.some(({ paper }) => !resultById.has(paper.id))) throw new Error("翻译服务返回内容不完整");
       const records = results.map((result) => {
         const item = batch.find(({ paper }) => paper.id === result.id);
         if (!item) return null;
@@ -815,11 +837,12 @@ async function translateCurrentPage() {
     } catch (error) {
       if (controller.signal.aborted || error?.name === "AbortError") return;
       failed = true;
+      failure = error;
       translationUnavailable = true;
       break;
     }
   }
-  if (failed && requestId === translationRequestId) showToast("中文翻译暂不可用，已保留原文");
+  if (failed && requestId === translationRequestId) showToast(translationFailureMessage(failure));
   if (translationController === controller) translationController = null;
 }
 

@@ -62,7 +62,7 @@ GitHub Pages 上的刷新按钮用于检查最近一次 Actions 生成的数据�
 代码中的 `supabase/functions/translate/index.ts` 是翻译代理。先在 DeepL 账户创建 API key，再在 Supabase 项目中执行：
 
     supabase secrets set DEEPL_AUTH_KEY=你的DeepL密钥
-    supabase functions deploy translate
+    supabase functions deploy translate --no-verify-jwt
 
 默认使用 DeepL Free API；DeepL Pro 用户可额外设置 `DEEPL_API_URL=https://api.deepl.com/v2/translate`。部署后，Pages 构建注入的 Supabase URL 和 publishable key 会自动指向该函数，浏览器不会接触 DeepL 密钥。
 
@@ -107,10 +107,10 @@ GitHub Pages 上的刷新按钮用于检查最近一次 Actions 生成的数据�
 
 论文数据不需要人工提交。定时任务每 6 小时自动更新，生成数据按来源拆分，设备只下载当前勾选的来源。
 
-发布正式版本时，将 version.json 中的版本号改为新版本，例如 0.9.0，提交并推送，然后创建对应标签：
+发布正式版本时，将 version.json 中的版本号改为新版本，例如 0.9.1，提交并推送，然后创建对应标签：
 
-    git tag v0.9.0
-    git push origin v0.9.0
+    git tag v0.9.1
+    git push origin v0.9.1
 
 **Create Paperlane Release** 会自动生成一个可下载的 Windows 压缩包，并创建 GitHub Release 和更新说明。
 

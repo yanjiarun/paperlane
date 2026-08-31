@@ -43,7 +43,7 @@ CROSSREF_MAX_PAGES = 50
 ARXIV_MAX_RESULTS = 500
 STATIC_RANGE_DAYS = 365
 STATIC_IEEE_SCOPE = "ea+5"
-USER_AGENT = "Paperlane/0.9 (personal academic feed reader)"
+USER_AGENT = "Paperlane/0.9.1 (personal academic feed reader)"
 IEEE_BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
 REQUEST_TIMEOUT = 30
 REQUEST_ATTEMPTS = 3
@@ -521,18 +521,36 @@ def fetch_openreview_notes(
     filters=None,
 ):
     """Read all note pages, including APIs that cap each response at 100 notes."""
-    params_base = {"invitation": invitation, "limit": page_size}
+    params_base = {"invitation": invitation, "limit": page_size, "sort": "id", "count": "true"}
     params_base.update(filters or {})
     errors = []
     for base in OPENREVIEW_API_BASES:
         notes = []
         seen_keys = set()
+        cursor = ""
         offset = 0
+        pagination_mode = "after"
         limited = False
         try:
             for _ in range(max_pages):
-                params = dict(params_base, offset=offset)
-                payload = request_openreview_json("/notes", params, bases=(base,))
+                params = dict(params_base)
+                if pagination_mode == "after" and cursor:
+                    params.pop("count", None)
+                    params["after"] = cursor
+                elif pagination_mode == "offset":
+                    params["offset"] = offset
+                else:
+                    params["offset"] = 0
+                try:
+                    payload = request_openreview_json("/notes", params, bases=(base,))
+                except Exception:
+                    # A few legacy deployments do not implement `after`; retry
+                    # the same page with the older offset-based API.
+                    if pagination_mode != "after" or not cursor:
+                        raise
+                    pagination_mode = "offset"
+                    params = dict(params_base, offset=offset)
+                    payload = request_openreview_json("/notes", params, bases=(base,))
                 page = payload.get("notes") or payload.get("results") or []
                 if not isinstance(page, list) or not page:
                     break
@@ -550,22 +568,37 @@ def fetch_openreview_notes(
                     new_page.append(note)
                 notes.extend(new_page)
                 if repeated and not new_page:
+                    if pagination_mode == "after":
+                        # If `after` was silently ignored, retry from the same
+                        # position with offset before declaring the feed done.
+                        pagination_mode = "offset"
+                        continue
                     break
                 offset += len(page)
                 try:
-                    total = int(payload.get("count") or payload.get("total") or 0)
+                    total = int(payload.get("total") or 0)
+                    if not total and params.get("count") == "true":
+                        reported_count = int(payload.get("count") or 0)
+                        # `count` is the total on current OpenReview APIs;
+                        # ignore a cap-sized count that is only this page.
+                        total = reported_count if reported_count > len(page) else 0
                 except (TypeError, ValueError):
                     total = 0
-                # Some OpenReview deployments return 100 notes even when limit=1000.
-                # Trust the server total before using the short-page heuristic.
-                if total:
-                    # A few older deployments expose the page size as `count`.
-                    # One extra empty request is harmless and avoids truncating
-                    # a collection at exactly 100 notes.
-                    if offset >= total and not (len(page) >= 100 and len(page) < page_size):
-                        break
-                elif len(page) < page_size and len(page) < 100:
+                if total and offset >= total:
                     break
+                # A final short page is safe to stop on.  A 100-note page is
+                # deliberately continued because that is the common server cap.
+                if len(page) < page_size and len(page) < 100:
+                    break
+                last_key = next(
+                    (str(note.get("id") or note.get("forum") or "") for note in reversed(page) if isinstance(note, dict)),
+                    "",
+                )
+                if pagination_mode == "after":
+                    if not last_key:
+                        pagination_mode = "offset"
+                    else:
+                        cursor = last_key
             else:
                 limited = True
             return notes, limited
@@ -644,9 +677,42 @@ def fetch_openreview(config, range_days=DEFAULT_RANGE_DAYS):
         invitation = config["invitation"].format(year=year)
         year_papers = []
         try:
-            group = fetch_openreview_group(invitation.rsplit("/-/", 1)[0])
+            conference_id = invitation.rsplit("/-/", 1)[0]
+            group = fetch_openreview_group(conference_id)
             group_content = group.get("content") or {}
             submission_invitation = openreview_value(group_content, "submission_id") or invitation
+            submission_venue_id = openreview_value(group_content, "submission_venue_id")
+            # Current venue groups expose submission_venue_id; older groups
+            # use the decision map below and should skip this probe entirely.
+            venue_ids = [conference_id] if submission_venue_id else []
+            if submission_venue_id and submission_venue_id not in venue_ids:
+                venue_ids.append(submission_venue_id)
+            for venue_id in venue_ids:
+                try:
+                    # Match openreview-py's get_all_notes(content={"venueid":
+                    # conference_id}) so a 100-note response is followed by
+                    # the after cursor until the whole accepted set is read.
+                    notes, year_limited = fetch_openreview_notes(
+                        submission_invitation,
+                        page_size=page_size,
+                        filters={"content.venueid": venue_id},
+                    )
+                except Exception:
+                    continue
+                limited = limited or year_limited
+                year_papers = [
+                    paper for paper in (
+                        # venueid already identifies the accepted proceedings;
+                        # do not require a textual "accept" token in venue.
+                        openreview_note_to_paper(note, config, year, require_accept=False, source_order=len(papers) + index)
+                        for index, note in enumerate(notes)
+                    ) if paper
+                ]
+                if year_papers:
+                    papers.extend(year_papers)
+                    break
+            if year_papers:
+                continue
             decision_map = openreview_raw(group_content, "decision_heading_map")
             accepted = [
                 (venue, heading)
@@ -668,7 +734,7 @@ def fetch_openreview(config, range_days=DEFAULT_RANGE_DAYS):
                         ) if paper
                     )
             else:
-                venue_id = openreview_value(group_content, "submission_venue_id")
+                venue_id = submission_venue_id
                 if not venue_id:
                     raise ValueError("OpenReview 会议组缺少录用 venue")
                 notes, year_limited = fetch_openreview_notes(
@@ -1697,7 +1763,7 @@ def build_static_site(output_directory, refresh=True, range_days=STATIC_RANGE_DA
     )
     (output / "supabase-config.js").write_text(config, encoding="utf-8")
 
-    source_version = {"version": "0.9.0"}
+    source_version = {"version": "0.9.1"}
     try:
         with (ROOT / "version.json").open("r", encoding="utf-8") as handle:
             source_version.update(json.load(handle))

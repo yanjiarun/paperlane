@@ -254,6 +254,59 @@ class PaperlaneServerTests(unittest.TestCase):
         self.assertEqual({item["decisionLabel"] for item in result["papers"]}, {"Oral", "Spotlight"})
         self.assertEqual(len(result["papers"]), 4)
 
+    def test_openreview_prefers_venueid_for_full_accepted_set(self):
+        config = dict(server.CONFERENCE_FEEDS[0], limit=1000)
+        venue_id = "ICML.cc/2026/Conference"
+        first_page = [{
+            "id": "oral-{}".format(index),
+            "forum": "oral-{}".format(index),
+            "content": {
+                "title": {"value": "Full venue paper {}".format(index)},
+                "venue": {"value": "ICML 2026 Oral"},
+                "venueid": {"value": venue_id},
+            },
+        } for index in range(100)]
+        pages = {
+            None: {"notes": first_page, "count": 101},
+            "oral-99": {"notes": [{
+                "id": "poster-1",
+                "forum": "poster-1",
+                "content": {
+                    "title": {"value": "Second venue paper"},
+                    "venue": {"value": "ICML 2026 Poster"},
+                    "venueid": {"value": venue_id},
+                },
+            }]},
+        }
+        note_calls = []
+
+        def request(url):
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+            if parsed.path.endswith("/groups"):
+                group_id = query["prefix"][0]
+                year = group_id.split("/")[1]
+                return json.dumps({"groups": [{
+                    "id": group_id,
+                    "content": {
+                        "submission_id": {"value": group_id + "/-/Submission"},
+                        "submission_venue_id": {"value": venue_id if year == "2026" else "ICML.cc/2025/Conference"},
+                    },
+                }]}).encode("utf-8")
+            note_calls.append(query)
+            if query.get("content.venueid") != [venue_id]:
+                return json.dumps({"notes": []}).encode("utf-8")
+            return json.dumps(pages.get(query.get("after", [None])[0], {"notes": []})).encode("utf-8")
+
+        with mock.patch.object(server, "request_bytes", side_effect=request):
+            result = server.fetch_openreview(config)
+
+        self.assertFalse(result["limited"])
+        self.assertEqual(len(result["papers"]), 101)
+        current_year_calls = [query for query in note_calls if query.get("content.venueid") == [venue_id]]
+        self.assertEqual(len(current_year_calls), 2)
+        self.assertEqual(current_year_calls[1].get("after"), ["oral-99"])
+
     def test_openreview_continues_after_short_pages_when_total_is_larger(self):
         pages = {
             0: {"notes": [{"id": str(index)} for index in range(100)], "total": 205},
@@ -287,6 +340,27 @@ class PaperlaneServerTests(unittest.TestCase):
 
         self.assertFalse(limited)
         self.assertEqual(len(notes), 201)
+
+    def test_openreview_uses_after_cursor_for_capped_pages(self):
+        pages = {
+            None: {"notes": [{"id": "note-{:03d}".format(index)} for index in range(100)], "count": 201},
+            "note-099": {"notes": [{"id": "note-{:03d}".format(index)} for index in range(100, 200)]},
+            "note-199": {"notes": [{"id": "note-200"}]},
+        }
+        cursors = []
+
+        def request(url):
+            query = parse_qs(urlparse(url).query)
+            cursor = query.get("after", [None])[0]
+            cursors.append(cursor)
+            return json.dumps(pages[cursor]).encode("utf-8")
+
+        with mock.patch.object(server, "request_bytes", side_effect=request):
+            notes, limited = server.fetch_openreview_notes("Venue/-/Submission", page_size=1000)
+
+        self.assertFalse(limited)
+        self.assertEqual(len(notes), 201)
+        self.assertEqual(cursors, [None, "note-099", "note-199"])
 
     def test_openreview_tries_api2_then_api(self):
         def request(url):

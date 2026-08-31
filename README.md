@@ -54,7 +54,7 @@ publishable/anon key 本来就是公开前端密钥，安全边界由数据库 R
 翻译代理使用仓库中的 Supabase Edge Function：
 
     supabase secrets set DEEPL_AUTH_KEY=你的DeepL密钥
-    supabase functions deploy translate
+    supabase functions deploy translate --no-verify-jwt
 
 函数默认使用 DeepL Free API；如果是 Pro API，可设置 `DEEPL_API_URL=https://api.deepl.com/v2/translate` 后重新部署。`supabase/config.toml` 已将该函数设为由函数内部校验 user/publishable 凭据，访客请求使用 `apikey`，登录请求额外携带用户 JWT。DeepL 密钥只保存在 Supabase 服务端环境变量中，不会写入 GitHub Pages 或浏览器。没有配置 Supabase 或 Edge Function 时，开关仍可切换，但会保留英文原文并提示翻译服务未配置。
 
